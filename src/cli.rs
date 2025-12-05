@@ -293,15 +293,21 @@ fn handle_incoming_message(
         }
 
         // Handle protocol messages
+        println!("[DEBUG] Trying to parse as protocol message...");
         if let Ok(msg) = ProtocolMessage::from_json(message_str) {
+            println!("[DEBUG] Parsed message type: {:?}", msg.msg_type);
             match msg.msg_type {
                 MessageType::Handshake => {
                     if let Some(sender_id) = &msg.sender_id {
+                        println!("[DEBUG] Handshake sender_id: {}", sender_id);
                         if let Some(public_key) = msg.payload.get("public_key").and_then(|v| v.as_str()) {
+                            println!("[DEBUG] Got public_key from handshake (length: {})", public_key.len());
+                            
                             // Check if we already have this peer's public key
                             let already_have_key = peer_manager.lock()
                                 .map(|pm| pm.get_peer_public_key(sender_id).is_some())
                                 .unwrap_or(false);
+                            println!("[DEBUG] already_have_key: {}", already_have_key);
                             
                             // Save the sender's public key
                             if let Ok(mut pm) = peer_manager.lock() {
