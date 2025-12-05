@@ -1,0 +1,50 @@
+[package]
+name = "tor_messenger"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tor Messenger"]
+description = "Serverless peer-to-peer messaging over Tor hidden services"
+
+[dependencies]
+# GUI Framework
+iced = { version = "0.13", features = ["tokio"] }
+
+# Async Runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Cryptography
+rsa = { version = "0.9", features = ["sha2"] }
+aes-gcm = "0.10"
+rand = "0.8"
+sha2 = "0.10"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Utilities
+uuid = { version = "1.6", features = ["v4"] }
+base64 = "0.21"
+chrono = "0.4"
+dirs = "5.0"
+regex = "1.10"
+url = "2.5"
+urlencoding = "2.1"
+
+# Networking
+socks = "0.3"
+
+# Logging
+log = "0.4"
+env_logger = "0.10"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = true

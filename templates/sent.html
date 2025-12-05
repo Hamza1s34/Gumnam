@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Message Sent - Tor Messenger</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #00ff00;
+        }
+        .container {
+            background: #000;
+            border: 2px solid #00ff00;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 0 20px rgba(0,255,0,0.3);
+            text-align: center;
+        }
+        h1 {
+            color: #00ff00;
+            text-shadow: 0 0 10px #00ff00;
+        }
+        .success-icon {
+            font-size: 80px;
+            margin: 20px 0;
+        }
+        .message {
+            background: #003300;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border-left: 4px solid #00ff00;
+        }
+        .back-link {
+            display: inline-block;
+            background: #00ff00;
+            color: #000;
+            text-decoration: none;
+            padding: 12px 30px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 5px;
+            margin-top: 20px;
+            transition: all 0.3s;
+        }
+        .back-link:hover {
+            background: #00cc00;
+            box-shadow: 0 0 20px rgba(0,255,0,0.5);
+        }
+        .footer {
+            margin-top: 30px;
+            color: #00aa00;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="success-icon">✅</div>
+        <h1>Message Sent!</h1>
+        
+        <div class="message">
+            <p>Your anonymous message has been delivered successfully.</p>
+            <p>The recipient will see it in their Tor Messenger app.</p>
+        </div>
+        
+        <a href="/" class="back-link">← Send Another Message</a>
+        
+        <div class="footer">
+            <p>🔒 Your message was sent anonymously through Tor</p>
+        </div>
+    </div>
+</body>
+</html>

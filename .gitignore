@@ -1,0 +1,34 @@
+# Build outputs
+target/
+build/
+*.db
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# macOS
+.DS_Store
+*.swp
+
+# Flutter
+ui-desktop/.dart_tool/
+ui-desktop/build/
+ui-desktop/.flutter-plugins
+ui-desktop/.flutter-plugins-dependencies
+ui-desktop/.packages
+ui-desktop/.pub-cache/
+ui-desktop/.pub/
+ui-desktop/pubspec.lock
+
+# Rust
+*.rs.bk
+Cargo.lock
+
+# Tor data (sensitive)
+tor_data/
+*.onion
+
+# Logs
+*.log

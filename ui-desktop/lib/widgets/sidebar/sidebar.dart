@@ -1,0 +1,609 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import 'package:tor_messenger_ui/services/tor_service_provider.dart';
+import 'package:tor_messenger_ui/services/chat_provider.dart';
+import 'package:tor_messenger_ui/theme/app_theme.dart';
+import 'package:tor_messenger_ui/widgets/dialogs/new_chat_dialog.dart';
+
+class Sidebar extends StatefulWidget {
+  const Sidebar({super.key});
+
+  @override
+  State<Sidebar> createState() => _SidebarState();
+}
+
+class _SidebarState extends State<Sidebar> {
+  final _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    // Load contacts when widget initializes
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<ChatProvider>().loadContacts();
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _showNewChatDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => const NewChatDialog(),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: AppTheme.sidebarBackground,
+      child: Column(
+        children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.all(16),
+            color: AppTheme.sidebarBackground,
+            child: Row(
+              children: [
+                const CircleAvatar(
+                  backgroundColor: AppTheme.primaryPurple,
+                  child: Icon(Icons.person, color: Colors.white),
+                ),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.chat),
+                  onPressed: _showNewChatDialog,
+                  tooltip: 'New Chat',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.more_vert),
+                  onPressed: () {},
+                  tooltip: 'Menu',
+                ),
+              ],
+            ),
+          ),
+          // Status Bar
+          Consumer<TorServiceProvider>(
+            builder: (context, tor, child) {
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                color: AppTheme.sidebarBackground,
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.circle,
+                      size: 10,
+                      color: tor.isReady ? Colors.green : Colors.red,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: SelectableText(
+                        tor.isReady ? tor.onionAddress : tor.status,
+                        style: const TextStyle(fontSize: 10, color: Colors.grey),
+                      ),
+                    ),
+                    if (tor.isReady)
+                      IconButton(
+                        icon: const Icon(Icons.copy, size: 14),
+                        onPressed: () {
+                          Clipboard.setData(ClipboardData(text: tor.onionAddress));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Address copied!')),
+                          );
+                        },
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                  ],
+                ),
+              );
+            },
+          ),
+          // Search
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: TextField(
+              controller: _searchController,
+              onChanged: (value) {
+                setState(() => _searchQuery = value.toLowerCase());
+              },
+              decoration: InputDecoration(
+                hintText: 'Search contacts',
+                prefixIcon: const Icon(Icons.search, color: AppTheme.textSecondary),
+                filled: true,
+                fillColor: AppTheme.receivedMessage,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.symmetric(vertical: 8),
+              ),
+            ),
+          ),
+          // Archived Chats Section
+          Consumer<ChatProvider>(
+            builder: (context, chatProvider, child) {
+              if (chatProvider.archivedContacts.isEmpty) {
+                return const SizedBox.shrink();
+              }
+              return ExpansionTile(
+                leading: const Icon(Icons.archive, color: AppTheme.textSecondary),
+                title: Text(
+                  'Archived Chats (${chatProvider.archivedContacts.length})',
+                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 14),
+                ),
+                collapsedIconColor: AppTheme.textSecondary,
+                iconColor: AppTheme.textSecondary,
+                children: chatProvider.archivedContacts.map((contact) {
+                  return ListTile(
+                    dense: true,
+                    leading: CircleAvatar(
+                      radius: 16,
+                      backgroundColor: Colors.grey.shade700,
+                      child: Text(
+                        contact.nickname.substring(0, 1).toUpperCase(),
+                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                      ),
+                    ),
+                    title: Text(
+                      contact.nickname,
+                      style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.unarchive, size: 18, color: AppTheme.textSecondary),
+                      onPressed: () => chatProvider.unarchiveChat(contact.onionAddress),
+                      tooltip: 'Unarchive',
+                    ),
+                    onTap: () => chatProvider.selectContact(contact),
+                  );
+                }).toList(),
+              );
+            },
+          ),
+          // Contact List
+          Expanded(
+            child: Consumer<ChatProvider>(
+              builder: (context, chatProvider, child) {
+                if (chatProvider.isLoading) {
+                  return const Center(
+                    child: CircularProgressIndicator(),
+                  );
+                }
+
+                final contacts = chatProvider.contacts.where((c) {
+                  if (_searchQuery.isEmpty) return true;
+                  return c.nickname.toLowerCase().contains(_searchQuery) ||
+                      c.onionAddress.toLowerCase().contains(_searchQuery);
+                }).toList();
+
+                if (contacts.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(
+                          Icons.chat_bubble_outline,
+                          size: 48,
+                          color: AppTheme.textSecondary,
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          _searchQuery.isNotEmpty
+                              ? 'No contacts found'
+                              : 'No conversations yet',
+                          style: const TextStyle(color: AppTheme.textSecondary),
+                        ),
+                        const SizedBox(height: 8),
+                        TextButton.icon(
+                          onPressed: _showNewChatDialog,
+                          icon: const Icon(Icons.add, size: 18),
+                          label: const Text('Start a new chat'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: AppTheme.primaryPurple,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  itemCount: contacts.length,
+                  itemBuilder: (context, index) {
+                    final contact = contacts[index];
+                    final isSelected = chatProvider.selectedContact?.onionAddress == contact.onionAddress;
+                    final isWebContact = contact.onionAddress == 'web_messages_contact';
+                    
+                    return _ChatListTile(
+                      contact: contact,
+                      isSelected: isSelected,
+                      isWebContact: isWebContact,
+                      webMessageCount: chatProvider.webMessageCount,
+                      onTap: () => chatProvider.selectContact(contact),
+                      onLongPress: () {
+                        if (!isWebContact) {
+                          _showContactOptions(context, contact);
+                        }
+                      },
+                      onDelete: isWebContact ? null : () => _confirmDeleteChat(context, contact),
+                      onClear: () => _confirmClearChat(context, contact),
+                      onArchive: isWebContact ? null : () => _confirmArchiveChat(context, contact),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatLastSeen(int timestamp) {
+    final date = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
+    final now = DateTime.now();
+    final diff = now.difference(date);
+
+    if (diff.inDays == 0) {
+      return DateFormat('HH:mm').format(date);
+    } else if (diff.inDays == 1) {
+      return 'Yesterday';
+    } else if (diff.inDays < 7) {
+      return DateFormat('EEE').format(date);
+    } else {
+      return DateFormat('MM/dd').format(date);
+    }
+  }
+
+  void _showContactOptions(BuildContext context, contact) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.sidebarBackground,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.copy),
+              title: const Text('Copy Address'),
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: contact.onionAddress));
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Address copied!')),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.clear_all, color: Colors.orange),
+              title: const Text('Clear Chat', style: TextStyle(color: Colors.orange)),
+              onTap: () {
+                Navigator.pop(context);
+                _confirmClearChat(context, contact);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.archive, color: Colors.blue),
+              title: const Text('Archive Chat', style: TextStyle(color: Colors.blue)),
+              onTap: () {
+                Navigator.pop(context);
+                _confirmArchiveChat(context, contact);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete, color: Colors.red),
+              title: const Text('Delete Chat', style: TextStyle(color: Colors.red)),
+              onTap: () {
+                Navigator.pop(context);
+                _confirmDeleteChat(context, contact);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _confirmDeleteChat(BuildContext context, contact) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppTheme.sidebarBackground,
+        title: const Text('Delete Chat?'),
+        content: Text('Are you sure you want to delete the chat with ${contact.nickname}? This will remove the contact and all messages.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true && context.mounted) {
+      context.read<ChatProvider>().deleteChatWithMessages(contact.onionAddress);
+    }
+  }
+
+  void _confirmClearChat(BuildContext context, contact) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppTheme.sidebarBackground,
+        title: const Text('Clear Chat?'),
+        content: Text('Are you sure you want to clear all messages with ${contact.nickname}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.orange),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true && context.mounted) {
+      context.read<ChatProvider>().clearChatMessages(contact.onionAddress);
+    }
+  }
+
+  void _confirmArchiveChat(BuildContext context, contact) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppTheme.sidebarBackground,
+        title: const Text('Archive Chat?'),
+        content: Text('Are you sure you want to archive the chat with ${contact.nickname}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.blue),
+            child: const Text('Archive'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true && context.mounted) {
+      context.read<ChatProvider>().archiveChat(contact.onionAddress);
+    }
+  }
+}
+
+// Custom chat list tile widget with hover menu
+class _ChatListTile extends StatefulWidget {
+  final dynamic contact;
+  final bool isSelected;
+  final bool isWebContact;
+  final int webMessageCount;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+  final VoidCallback? onDelete;
+  final VoidCallback? onClear;
+  final VoidCallback? onArchive;
+
+  const _ChatListTile({
+    required this.contact,
+    required this.isSelected,
+    required this.isWebContact,
+    required this.webMessageCount,
+    required this.onTap,
+    required this.onLongPress,
+    this.onDelete,
+    this.onClear,
+    this.onArchive,
+  });
+
+  @override
+  State<_ChatListTile> createState() => _ChatListTileState();
+}
+
+class _ChatListTileState extends State<_ChatListTile> {
+  bool _isHovering = false;
+
+  // Sanitize text to handle malformed UTF-16 characters
+  String _sanitizeText(String text) {
+    try {
+      // Replace URL-encoded plus signs with spaces
+      String cleaned = text.replaceAll('+', ' ');
+      // Remove any invalid characters for display
+      final buffer = StringBuffer();
+      for (int i = 0; i < cleaned.length; i++) {
+        final codeUnit = cleaned.codeUnitAt(i);
+        if (codeUnit >= 0x0000 && codeUnit <= 0xD7FF) {
+          buffer.writeCharCode(codeUnit);
+        } else if (codeUnit >= 0xE000 && codeUnit <= 0xFFFF) {
+          buffer.writeCharCode(codeUnit);
+        } else if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF && i + 1 < cleaned.length) {
+          final nextCodeUnit = cleaned.codeUnitAt(i + 1);
+          if (nextCodeUnit >= 0xDC00 && nextCodeUnit <= 0xDFFF) {
+            buffer.writeCharCode(codeUnit);
+            buffer.writeCharCode(nextCodeUnit);
+            i++;
+          }
+        }
+      }
+      return buffer.toString();
+    } catch (e) {
+      return text.replaceAll(RegExp(r'[^\x00-\x7F]'), '?');
+    }
+  }
+
+  String _formatLastSeen(int timestamp) {
+    final date = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
+    final now = DateTime.now();
+    final diff = now.difference(date);
+
+    if (diff.inDays == 0) {
+      return DateFormat('HH:mm').format(date);
+    } else if (diff.inDays == 1) {
+      return 'Yesterday';
+    } else if (diff.inDays < 7) {
+      return DateFormat('EEE').format(date);
+    } else {
+      return DateFormat('MM/dd').format(date);
+    }
+  }
+
+  void _showMenu(BuildContext context) {
+    final RenderBox button = context.findRenderObject() as RenderBox;
+    final RenderBox overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final RelativeRect position = RelativeRect.fromRect(
+      Rect.fromPoints(
+        button.localToGlobal(button.size.topRight(Offset.zero), ancestor: overlay),
+        button.localToGlobal(button.size.bottomRight(Offset.zero), ancestor: overlay),
+      ),
+      Offset.zero & overlay.size,
+    );
+
+    showMenu<String>(
+      context: context,
+      position: position,
+      color: AppTheme.sidebarBackground,
+      items: [
+        if (widget.onClear != null)
+          const PopupMenuItem<String>(
+            value: 'clear',
+            child: Row(
+              children: [
+                Icon(Icons.clear_all, color: Colors.orange, size: 20),
+                SizedBox(width: 12),
+                Text('Clear Chat', style: TextStyle(color: Colors.orange)),
+              ],
+            ),
+          ),
+        if (widget.onArchive != null)
+          const PopupMenuItem<String>(
+            value: 'archive',
+            child: Row(
+              children: [
+                Icon(Icons.archive, color: Colors.blue, size: 20),
+                SizedBox(width: 12),
+                Text('Archive', style: TextStyle(color: Colors.blue)),
+              ],
+            ),
+          ),
+        if (widget.onDelete != null)
+          const PopupMenuItem<String>(
+            value: 'delete',
+            child: Row(
+              children: [
+                Icon(Icons.delete, color: Colors.red, size: 20),
+                SizedBox(width: 12),
+                Text('Delete', style: TextStyle(color: Colors.red)),
+              ],
+            ),
+          ),
+      ],
+    ).then((value) {
+      if (value == 'clear') {
+        widget.onClear?.call();
+      } else if (value == 'archive') {
+        widget.onArchive?.call();
+      } else if (value == 'delete') {
+        widget.onDelete?.call();
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovering = true),
+      onExit: (_) => setState(() => _isHovering = false),
+      child: ListTile(
+        selected: widget.isSelected,
+        selectedTileColor: Colors.white.withOpacity(0.1),
+        leading: Stack(
+          children: [
+            CircleAvatar(
+              backgroundColor: widget.isWebContact 
+                  ? Colors.blue 
+                  : (widget.isSelected ? AppTheme.primaryPurple : Colors.grey.shade700),
+              child: widget.isWebContact
+                  ? const Icon(Icons.public, color: Colors.white)
+                  : Text(
+                      widget.contact.nickname.substring(0, 1).toUpperCase(),
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
+            ),
+            if (widget.isWebContact && widget.webMessageCount > 0)
+              Positioned(
+                right: 0,
+                top: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: const BoxDecoration(
+                    color: Colors.red,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Text(
+                    '${widget.webMessageCount}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+        title: Text(
+          _sanitizeText(widget.contact.nickname),
+          style: TextStyle(
+            fontWeight: widget.isSelected ? FontWeight.bold : FontWeight.normal,
+            color: AppTheme.textPrimary,
+          ),
+        ),
+        subtitle: Text(
+          widget.isWebContact 
+              ? 'Messages from web visitors'
+              : '${widget.contact.onionAddress.substring(0, widget.contact.onionAddress.length > 20 ? 20 : widget.contact.onionAddress.length)}...',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.contact.lastSeen != null && !_isHovering)
+              Text(
+                _formatLastSeen(widget.contact.lastSeen!),
+                style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+              ),
+            if (_isHovering && (widget.onDelete != null || widget.onClear != null || widget.onArchive != null))
+              IconButton(
+                icon: const Icon(Icons.more_vert, size: 18),
+                onPressed: () => _showMenu(context),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                color: AppTheme.textSecondary,
+              ),
+          ],
+        ),
+        onTap: widget.onTap,
+        onLongPress: widget.onLongPress,
+        hoverColor: Colors.white.withOpacity(0.05),
+      ),
+    );
+  }
+}
