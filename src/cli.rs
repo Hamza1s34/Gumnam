@@ -20,6 +20,9 @@ pub fn run_cli() {
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();
 
+    // Check for restricted environments (Codespaces, containers, etc.)
+    check_environment_warnings();
+
     // Initialize components
     println!("[*] Initializing crypto handler...");
     let crypto = Arc::new(Mutex::new(
@@ -332,5 +335,51 @@ fn handle_incoming_message(
         println!("\n[←] Raw: {}", message_str);
         print!("> ");
         io::stdout().flush().ok();
+    }
+}
+
+/// Check for restricted environments and warn the user
+fn check_environment_warnings() {
+    let mut warnings = Vec::new();
+    
+    // Check for GitHub Codespaces
+    if std::env::var("CODESPACES").is_ok() || std::env::var("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN").is_ok() {
+        warnings.push("GitHub Codespaces detected");
+    }
+    
+    // Check for common container environments
+    if std::path::Path::new("/.dockerenv").exists() {
+        warnings.push("Docker container detected");
+    }
+    
+    if std::env::var("KUBERNETES_SERVICE_HOST").is_ok() {
+        warnings.push("Kubernetes environment detected");
+    }
+    
+    // Check for cloud shell environments
+    if std::env::var("CLOUD_SHELL").is_ok() {
+        warnings.push("Cloud Shell detected");
+    }
+    
+    if !warnings.is_empty() {
+        println!("╔══════════════════════════════════════════════════════════╗");
+        println!("║                    ⚠️  WARNING ⚠️                          ║");
+        println!("╠══════════════════════════════════════════════════════════╣");
+        println!("║  Running in a restricted environment:                    ║");
+        for warning in &warnings {
+            println!("║  • {:<52} ║", warning);
+        }
+        println!("╠══════════════════════════════════════════════════════════╣");
+        println!("║  Tor hidden services may NOT be accessible externally!   ║");
+        println!("║                                                          ║");
+        println!("║  Reason: Container/cloud environments often block        ║");
+        println!("║  incoming connections required for hidden services.      ║");
+        println!("║                                                          ║");
+        println!("║  For full functionality, run on:                         ║");
+        println!("║  • Your local machine                                    ║");
+        println!("║  • A VPS with direct network access                      ║");
+        println!("║  • A server without NAT restrictions                     ║");
+        println!("╚══════════════════════════════════════════════════════════╝");
+        println!();
     }
 }
