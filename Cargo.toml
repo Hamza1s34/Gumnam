@@ -6,9 +6,6 @@ authors = ["Tor Messenger"]
 description = "Serverless peer-to-peer messaging over Tor hidden services"
 
 [dependencies]
-# GUI Framework
-iced = { version = "0.13", features = ["tokio"] }
-
 # Async Runtime
 tokio = { version = "1.35", features = ["full"] }
 

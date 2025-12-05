@@ -498,7 +498,7 @@ impl TorMessengerApp {
     }
     
     /// Build the view
-    pub fn view(&self) -> Element<GuiMessage> {
+    pub fn view(&self) -> Element<'_, GuiMessage> {
         // === Status Section ===
         let onion_text: String = self.onion_address.clone().unwrap_or_else(|| "Starting Tor...".to_string());
         

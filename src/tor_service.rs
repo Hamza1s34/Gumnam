@@ -10,12 +10,75 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use thiserror::Error;
 
 use crate::config;
+
+/// Get the path to the bundled Tor binary
+fn get_bundled_tor_path() -> Option<PathBuf> {
+    // Try relative to executable first
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Check in bin/tor directory relative to executable
+            let tor_path = exe_dir.join("bin").join("tor").join("tor");
+            if tor_path.exists() {
+                return Some(tor_path);
+            }
+            
+            // Check one level up (for when running from target/debug)
+            if let Some(parent) = exe_dir.parent() {
+                if let Some(parent2) = parent.parent() {
+                    let tor_path = parent2.join("bin").join("tor").join("tor");
+                    if tor_path.exists() {
+                        return Some(tor_path);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Try relative to current working directory
+    let cwd_tor = PathBuf::from("bin/tor/tor");
+    if cwd_tor.exists() {
+        return Some(cwd_tor.canonicalize().unwrap_or(cwd_tor));
+    }
+    
+    // Try from project root (common development scenario)
+    if let Ok(cwd) = std::env::current_dir() {
+        let tor_path = cwd.join("bin").join("tor").join("tor");
+        if tor_path.exists() {
+            return Some(tor_path);
+        }
+    }
+    
+    None
+}
+
+/// Get the path to the Tor binary (bundled or system)
+fn get_tor_binary_path() -> PathBuf {
+    // First try bundled Tor
+    if let Some(bundled) = get_bundled_tor_path() {
+        println!("Using bundled Tor binary: {:?}", bundled);
+        return bundled;
+    }
+    
+    // Fall back to system Tor
+    println!("Bundled Tor not found, trying system Tor...");
+    PathBuf::from("tor")
+}
+
+/// Get the library path for bundled Tor
+fn get_tor_lib_path() -> Option<PathBuf> {
+    if let Some(tor_path) = get_bundled_tor_path() {
+        if let Some(tor_dir) = tor_path.parent() {
+            return Some(tor_dir.to_path_buf());
+        }
+    }
+    None
+}
 
 #[derive(Error, Debug)]
 pub enum TorError {
@@ -142,8 +205,26 @@ impl TorService {
 
         println!("Starting embedded Tor process...");
 
+        // Get the Tor binary path (bundled or system)
+        let tor_binary = get_tor_binary_path();
+        
+        // Prepare the command
+        let mut tor_cmd_builder = Command::new(&tor_binary);
+        
+        // Set LD_LIBRARY_PATH for bundled Tor libraries
+        if let Some(lib_path) = get_tor_lib_path() {
+            let lib_path_str = lib_path.to_string_lossy().to_string();
+            let existing_ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+            let new_ld_path = if existing_ld_path.is_empty() {
+                lib_path_str
+            } else {
+                format!("{}:{}", lib_path_str, existing_ld_path)
+            };
+            tor_cmd_builder.env("LD_LIBRARY_PATH", new_ld_path);
+        }
+        
         // Start Tor process
-        let tor_cmd = Command::new("tor")
+        let tor_cmd = tor_cmd_builder
             .args([
                 "--SocksPort",
                 &config::TOR_SOCKS_PORT.to_string(),
@@ -586,21 +667,4 @@ fn send_http_response(stream: &mut TcpStream, html_content: &str, status: &str) 
     stream.write_all(response.as_bytes())?;
     stream.flush()?;
     Ok(())
-}
-
-// Helper trait for byte slice trimming
-trait TrimAscii {
-    fn trim_ascii(&self) -> &[u8];
-}
-
-impl TrimAscii for [u8] {
-    fn trim_ascii(&self) -> &[u8] {
-        let start = self.iter().position(|&b| !b.is_ascii_whitespace()).unwrap_or(self.len());
-        let end = self.iter().rposition(|&b| !b.is_ascii_whitespace()).map(|i| i + 1).unwrap_or(0);
-        if start < end {
-            &self[start..end]
-        } else {
-            &[]
-        }
-    }
 }
