@@ -96,7 +96,8 @@ impl MessageProtocol {
     }
 
     /// Create a handshake message with public key
-    pub fn create_handshake_message(sender_id: &str, public_key: &str) -> Message {
+    /// is_response: true if this is a response to a received handshake, false if initiating
+    pub fn create_handshake_message(sender_id: &str, public_key: &str, is_response: bool) -> Message {
         let mut payload = HashMap::new();
         payload.insert(
             "public_key".to_string(),
@@ -105,6 +106,10 @@ impl MessageProtocol {
         payload.insert(
             "protocol_version".to_string(),
             serde_json::Value::String("1.0".to_string()),
+        );
+        payload.insert(
+            "is_response".to_string(),
+            serde_json::Value::Bool(is_response),
         );
 
         Message::new(MessageType::Handshake, payload, Some(sender_id.to_string()), None)

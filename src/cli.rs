@@ -173,9 +173,9 @@ pub fn run_cli() {
                     Ok(_) => {
                         println!("[✓] Added contact: {}", addr);
                         
-                        // Send handshake
+                        // Send initial handshake (is_response = false)
                         let pk = crypto.lock().unwrap().get_public_key_pem().unwrap_or_default();
-                        let handshake = MessageProtocol::create_handshake_message(&onion_address, &pk);
+                        let handshake = MessageProtocol::create_handshake_message(&onion_address, &pk, false);
                         
                         if let Ok(json) = handshake.to_json() {
                             let tor = Arc::clone(&tor_service);
@@ -293,40 +293,44 @@ fn handle_incoming_message(
         }
 
         // Handle protocol messages
-        println!("[DEBUG] Trying to parse as protocol message...");
         if let Ok(msg) = ProtocolMessage::from_json(message_str) {
-            println!("[DEBUG] Parsed message type: {:?}", msg.msg_type);
             match msg.msg_type {
                 MessageType::Handshake => {
                     if let Some(sender_id) = &msg.sender_id {
-                        println!("[DEBUG] Handshake sender_id: {}", sender_id);
                         if let Some(public_key) = msg.payload.get("public_key").and_then(|v| v.as_str()) {
-                            println!("[DEBUG] Got public_key from handshake (length: {})", public_key.len());
+                            // Check if this is a response handshake
+                            let is_response = msg.payload.get("is_response")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
                             
                             // Save the sender's public key
                             if let Ok(mut pm) = peer_manager.lock() {
                                 let _ = pm.add_peer(sender_id, None, Some(public_key));
                                 pm.mark_peer_online(sender_id, None);
                             }
-                            println!("\n[✓] Handshake received from: {} (key saved)", sender_id);
                             
-                            // ALWAYS send our public key back when we receive a handshake
-                            // This ensures the sender gets our key even if we already have theirs
-                            let our_pk = crypto.lock().unwrap().get_public_key_pem().unwrap_or_default();
-                            let response_handshake = MessageProtocol::create_handshake_message(our_onion_address, &our_pk);
-                            
-                            if let Ok(json) = response_handshake.to_json() {
-                                let tor = Arc::clone(tor_service);
-                                let peer = sender_id.clone();
-                                thread::spawn(move || {
-                                    println!("[*] Sending response handshake to {}...", peer);
-                                    match tor.send_message(&peer, &json) {
-                                        Ok(_) => println!("[✓] Response handshake sent to {} - key exchange complete!", peer),
-                                        Err(e) => println!("[!] Response handshake failed: {}", e),
-                                    }
-                                    print!("> ");
-                                    io::stdout().flush().ok();
-                                });
+                            if is_response {
+                                println!("\n[✓] Response handshake from: {} (key saved) - exchange complete!", sender_id);
+                            } else {
+                                println!("\n[✓] Handshake from: {} (key saved)", sender_id);
+                                
+                                // Only send response if this is NOT a response handshake
+                                let our_pk = crypto.lock().unwrap().get_public_key_pem().unwrap_or_default();
+                                let response_handshake = MessageProtocol::create_handshake_message(our_onion_address, &our_pk, true);
+                                
+                                if let Ok(json) = response_handshake.to_json() {
+                                    let tor = Arc::clone(tor_service);
+                                    let peer = sender_id.clone();
+                                    thread::spawn(move || {
+                                        println!("[*] Sending response handshake to {}...", peer);
+                                        match tor.send_message(&peer, &json) {
+                                            Ok(_) => println!("[✓] Response handshake sent to {}", peer),
+                                            Err(e) => println!("[!] Response handshake failed: {}", e),
+                                        }
+                                        print!("> ");
+                                        io::stdout().flush().ok();
+                                    });
+                                }
                             }
                             
                             print!("> ");
