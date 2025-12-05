@@ -28,6 +28,14 @@ fn get_bundled_tor_path() -> Option<PathBuf> {
                 return Some(tor_path);
             }
             
+            // Check for macOS app bundle structure (Contents/MacOS -> Contents/Resources/bin/tor)
+            if let Some(contents_dir) = exe_dir.parent() {
+                let resources_tor = contents_dir.join("Resources").join("bin").join("tor").join("tor");
+                if resources_tor.exists() {
+                    return Some(resources_tor);
+                }
+            }
+            
             // Check one level up (for when running from target/debug)
             if let Some(parent) = exe_dir.parent() {
                 if let Some(parent2) = parent.parent() {
@@ -59,15 +67,52 @@ fn get_bundled_tor_path() -> Option<PathBuf> {
 
 /// Get the path to the Tor binary (bundled or system)
 fn get_tor_binary_path() -> PathBuf {
-    // First try bundled Tor
-    if let Some(bundled) = get_bundled_tor_path() {
-        println!("Using bundled Tor binary: {:?}", bundled);
-        return bundled;
+    // On macOS, prefer system Tor since bundled binaries would be Linux binaries
+    #[cfg(target_os = "macos")]
+    {
+        // Check common macOS Tor installation locations
+        let macos_tor_paths = [
+            "/usr/local/bin/tor",
+            "/opt/homebrew/bin/tor",
+            "/usr/local/Cellar/tor/0.4.8.21/bin/tor",
+            "/opt/local/bin/tor",  // MacPorts
+        ];
+        
+        for path in macos_tor_paths {
+            let tor_path = PathBuf::from(path);
+            if tor_path.exists() {
+                println!("Using system Tor on macOS: {:?}", tor_path);
+                return tor_path;
+            }
+        }
+        
+        // Try 'which tor' as fallback
+        if let Ok(output) = std::process::Command::new("which").arg("tor").output() {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    println!("Using system Tor from PATH: {}", path);
+                    return PathBuf::from(path);
+                }
+            }
+        }
+        
+        println!("Warning: No system Tor found on macOS. Please install with: brew install tor");
+        return PathBuf::from("tor");
     }
     
-    // Fall back to system Tor
-    println!("Bundled Tor not found, trying system Tor...");
-    PathBuf::from("tor")
+    // On Linux, try bundled Tor first
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(bundled) = get_bundled_tor_path() {
+            println!("Using bundled Tor binary: {:?}", bundled);
+            return bundled;
+        }
+        
+        // Fall back to system Tor on Linux
+        println!("Bundled Tor not found, trying system Tor...");
+        PathBuf::from("tor")
+    }
 }
 
 /// Get the library path for bundled Tor
@@ -78,6 +123,43 @@ fn get_tor_lib_path() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Set up environment for Tor process with proper library paths
+fn setup_tor_environment(cmd: &mut Command) {
+    if let Some(lib_path) = get_tor_lib_path() {
+        let lib_path_str = lib_path.to_string_lossy().to_string();
+        
+        // Set LD_LIBRARY_PATH for Linux
+        let existing_ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+        let new_ld_path = if existing_ld_path.is_empty() {
+            lib_path_str.clone()
+        } else {
+            format!("{}:{}", lib_path_str, existing_ld_path)
+        };
+        cmd.env("LD_LIBRARY_PATH", new_ld_path);
+        
+        // Set DYLD_LIBRARY_PATH for macOS
+        #[cfg(target_os = "macos")]
+        {
+            let existing_dyld_path = std::env::var("DYLD_LIBRARY_PATH").unwrap_or_default();
+            let new_dyld_path = if existing_dyld_path.is_empty() {
+                lib_path_str.clone()
+            } else {
+                format!("{}:{}", lib_path_str, existing_dyld_path)
+            };
+            cmd.env("DYLD_LIBRARY_PATH", new_dyld_path);
+            
+            // Also set DYLD_FALLBACK_LIBRARY_PATH as a fallback
+            let existing_fallback = std::env::var("DYLD_FALLBACK_LIBRARY_PATH").unwrap_or_default();
+            let new_fallback = if existing_fallback.is_empty() {
+                lib_path_str
+            } else {
+                format!("{}:{}", lib_path_str, existing_fallback)
+            };
+            cmd.env("DYLD_FALLBACK_LIBRARY_PATH", new_fallback);
+        }
+    }
 }
 
 #[derive(Error, Debug)]
@@ -211,17 +293,8 @@ impl TorService {
         // Prepare the command
         let mut tor_cmd_builder = Command::new(&tor_binary);
         
-        // Set LD_LIBRARY_PATH for bundled Tor libraries
-        if let Some(lib_path) = get_tor_lib_path() {
-            let lib_path_str = lib_path.to_string_lossy().to_string();
-            let existing_ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-            let new_ld_path = if existing_ld_path.is_empty() {
-                lib_path_str
-            } else {
-                format!("{}:{}", lib_path_str, existing_ld_path)
-            };
-            tor_cmd_builder.env("LD_LIBRARY_PATH", new_ld_path);
-        }
+        // Set library paths for bundled Tor (Linux: LD_LIBRARY_PATH, macOS: DYLD_LIBRARY_PATH)
+        setup_tor_environment(&mut tor_cmd_builder);
         
         // Start Tor process
         let tor_cmd = tor_cmd_builder
