@@ -37,17 +37,8 @@ pub fn run_cli() {
     println!("[*] Initializing peer manager...");
     let peer_manager = Arc::new(Mutex::new(PeerManager::new(Arc::clone(&storage))));
 
-    // Create message handler for incoming messages
-    let crypto_clone = Arc::clone(&crypto);
-    let storage_clone = Arc::clone(&storage);
-    let peer_manager_clone = Arc::clone(&peer_manager);
-    
-    let message_handler = Box::new(move |msg: String| {
-        handle_incoming_message(&msg, &crypto_clone, &storage_clone, &peer_manager_clone);
-    });
-
     println!("[*] Starting Tor service...");
-    let tor_service = Arc::new(TorService::new(Some(message_handler)));
+    let tor_service = Arc::new(TorService::new(None));
 
     // Set bootstrap callback
     tor_service.set_bootstrap_callback(Box::new(|percentage, status| {
@@ -80,6 +71,27 @@ pub fn run_cli() {
             break "unknown".to_string();
         }
     };
+
+    // Now set up the message handler with access to tor_service for handshake responses
+    let crypto_clone = Arc::clone(&crypto);
+    let storage_clone = Arc::clone(&storage);
+    let peer_manager_clone = Arc::clone(&peer_manager);
+    let tor_service_clone = Arc::clone(&tor_service);
+    let onion_address_clone = onion_address.clone();
+    
+    let message_handler = Box::new(move |msg: String| {
+        handle_incoming_message(
+            &msg, 
+            &crypto_clone, 
+            &storage_clone, 
+            &peer_manager_clone,
+            &tor_service_clone,
+            &onion_address_clone,
+        );
+    });
+    
+    // Set the message handler on the tor service
+    tor_service.set_message_handler(message_handler);
 
     println!();
     println!("╔══════════════════════════════════════════════════════════╗");
@@ -263,6 +275,8 @@ fn handle_incoming_message(
     crypto: &Arc<Mutex<CryptoHandler>>,
     storage: &Arc<Mutex<MessageStorage>>,
     peer_manager: &Arc<Mutex<PeerManager>>,
+    tor_service: &Arc<TorService>,
+    our_onion_address: &str,
 ) {
     use crate::message::{Message as ProtocolMessage, MessageType};
 
@@ -284,11 +298,39 @@ fn handle_incoming_message(
                 MessageType::Handshake => {
                     if let Some(sender_id) = &msg.sender_id {
                         if let Some(public_key) = msg.payload.get("public_key").and_then(|v| v.as_str()) {
+                            // Check if we already have this peer's public key
+                            let already_have_key = peer_manager.lock()
+                                .map(|pm| pm.get_peer_public_key(sender_id).is_some())
+                                .unwrap_or(false);
+                            
+                            // Save the sender's public key
                             if let Ok(mut pm) = peer_manager.lock() {
                                 let _ = pm.add_peer(sender_id, None, Some(public_key));
                                 pm.mark_peer_online(sender_id, None);
                             }
-                            println!("\n[✓] Handshake from: {}", sender_id);
+                            println!("\n[✓] Handshake received from: {} (key saved)", sender_id);
+                            
+                            // If we didn't have their key before, send our public key back
+                            // This completes the bidirectional key exchange
+                            if !already_have_key {
+                                let our_pk = crypto.lock().unwrap().get_public_key_pem().unwrap_or_default();
+                                let response_handshake = MessageProtocol::create_handshake_message(our_onion_address, &our_pk);
+                                
+                                if let Ok(json) = response_handshake.to_json() {
+                                    let tor = Arc::clone(tor_service);
+                                    let peer = sender_id.clone();
+                                    thread::spawn(move || {
+                                        println!("[*] Sending response handshake to {}...", peer);
+                                        match tor.send_message(&peer, &json) {
+                                            Ok(_) => println!("[✓] Response handshake sent to {} - key exchange complete!", peer),
+                                            Err(e) => println!("[!] Response handshake failed: {}", e),
+                                        }
+                                        print!("> ");
+                                        io::stdout().flush().ok();
+                                    });
+                                }
+                            }
+                            
                             print!("> ");
                             io::stdout().flush().ok();
                         }
