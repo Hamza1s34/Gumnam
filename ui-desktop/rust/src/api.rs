@@ -352,29 +352,41 @@ pub fn get_new_message_count() -> i32 {
 }
 
 pub fn send_message(onion_address: String, message: String) -> anyhow::Result<bool> {
+    println!("[DEBUG] send_message called: to={}, msg={}", onion_address, message);
+    
     let service_guard = TOR_SERVICE.lock().unwrap();
     if let Some(service) = service_guard.as_ref() {
         let my_address = service.get_onion_address().unwrap_or_default();
+        println!("[DEBUG] My address: {}", my_address);
         
         // STRICT VALIDATION: Get recipient's public key - REQUIRED for encryption
         let pm_guard = PEER_MANAGER.lock().unwrap();
         let public_key = pm_guard.as_ref().and_then(|pm| pm.get_peer_public_key(&onion_address));
         drop(pm_guard);
         
+        println!("[DEBUG] Public key for recipient: {:?}", public_key.is_some());
+        
         // STRICT: Public key is REQUIRED - no unencrypted messages allowed
         let pk = public_key.ok_or_else(|| {
+            println!("[DEBUG] ERROR: No public key for recipient!");
             anyhow::anyhow!("Cannot send message: No public key for recipient. Please exchange handshake first.")
         })?;
         
         // STRICT: Crypto handler is REQUIRED
         let crypto_guard = CRYPTO.lock().unwrap();
         let crypto = crypto_guard.as_ref().ok_or_else(|| {
+            println!("[DEBUG] ERROR: Crypto not initialized!");
             anyhow::anyhow!("Cannot send message: Crypto not initialized.")
         })?;
         
         // STRICT: Encrypt the message - REQUIRED, no fallback to plaintext
         let encrypted_data = crypto.encrypt_message(&message, &pk)
-            .map_err(|e| anyhow::anyhow!("Encryption failed: {}. Message NOT sent.", e))?;
+            .map_err(|e| {
+                println!("[DEBUG] ERROR: Encryption failed: {}", e);
+                anyhow::anyhow!("Encryption failed: {}. Message NOT sent.", e)
+            })?;
+        
+        println!("[DEBUG] Message encrypted successfully");
         
         // Create encrypted protocol message with sender_id
         let msg = MessageProtocol::wrap_encrypted_message(
@@ -385,6 +397,9 @@ pub fn send_message(onion_address: String, message: String) -> anyhow::Result<bo
         let msg_id = msg.id.clone();
         let timestamp = msg.timestamp;
         let msg_json = msg.to_json().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        
+        println!("[DEBUG] Protocol message JSON length: {}", msg_json.len());
+        println!("[DEBUG] Protocol message (first 200 chars): {}", &msg_json[..std::cmp::min(200, msg_json.len())]);
         
         drop(crypto_guard);
         
@@ -405,8 +420,12 @@ pub fn send_message(onion_address: String, message: String) -> anyhow::Result<bo
         drop(storage_guard);
         
         // Send the encrypted protocol message
-        service.send_message(&onion_address, &msg_json).map_err(|e| anyhow::anyhow!(e.to_string()))
+        println!("[DEBUG] Sending message via Tor...");
+        let result = service.send_message(&onion_address, &msg_json);
+        println!("[DEBUG] Send result: {:?}", result.is_ok());
+        result.map_err(|e| anyhow::anyhow!(e.to_string()))
     } else {
+        println!("[DEBUG] ERROR: Tor service not started!");
         Err(anyhow::anyhow!("Tor service not started"))
     }
 }

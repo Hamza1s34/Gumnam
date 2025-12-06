@@ -280,14 +280,18 @@ fn handle_incoming_message(
 ) {
     use crate::message::{Message as ProtocolMessage, MessageType};
 
+    // DEBUG: Print raw message received
+    println!("\n[DEBUG] Raw message received (len={}): {:?}", message_str.len(), &message_str[..std::cmp::min(200, message_str.len())]);
+
     // STRICT: Must be valid JSON
     let msg_data = match serde_json::from_str::<serde_json::Value>(message_str) {
         Ok(data) => data,
-        Err(_) => {
+        Err(e) => {
             // Silently ignore non-JSON messages (like PING/OK)
             let trimmed = message_str.trim();
             if trimmed != "PING" && trimmed != "OK" && !trimmed.is_empty() {
-                println!("\n[⚠] Rejected non-protocol message (not JSON)");
+                println!("\n[⚠] Rejected non-protocol message (not JSON): {}", e);
+                println!("[DEBUG] Message bytes: {:?}", message_str.as_bytes());
                 print!("> ");
                 io::stdout().flush().ok();
             }
