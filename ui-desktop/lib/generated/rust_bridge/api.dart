@@ -6,7 +6,7 @@
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `get_web_messages_from_storage`
+// These functions are ignored because they are not marked as `pub`: `get_web_messages_from_storage`, `handle_handshake_message`, `handle_incoming_message`, `handle_raw_message`, `handle_text_message`, `handle_web_message`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`
 
 Future<String> startTor() => RustLib.instance.api.crateApiStartTor();
@@ -15,6 +15,10 @@ Future<String> getOnionAddress() =>
     RustLib.instance.api.crateApiGetOnionAddress();
 
 Future<void> stopTor() => RustLib.instance.api.crateApiStopTor();
+
+/// Get count of new messages since last check (for polling)
+Future<int> getNewMessageCount() =>
+    RustLib.instance.api.crateApiGetNewMessageCount();
 
 Future<bool> sendMessage({
   required String onionAddress,

@@ -40,14 +40,14 @@ class ChatProvider extends ChangeNotifier {
       if (pendingCount > 0) {
         _webMessageCount = pendingCount;
         notifyListeners();
-        
-        // If viewing web messages, refresh them
-        if (isViewingWebMessages) {
-          await loadMessages();
-        }
+      }
+      
+      // If a contact is selected, reload messages to check for new ones
+      if (_selectedContact != null) {
+        await loadMessages(silent: true);
       }
     } catch (e) {
-      debugPrint('Error checking messages: $e');
+      // Silently fail for polling errors to avoid log spam
     }
   }
 
@@ -190,25 +190,28 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> loadMessages() async {
+  Future<void> loadMessages({bool silent = false}) async {
     if (_selectedContact == null) {
-      debugPrint('[ChatProvider] loadMessages: No contact selected');
       return;
     }
     
-    debugPrint('[ChatProvider] loadMessages: Loading for ${_selectedContact!.onionAddress}');
+    if (!silent) {
+      debugPrint('[ChatProvider] loadMessages: Loading for ${_selectedContact!.onionAddress}');
+    }
     
     try {
       final rawMessages = await getMessages(
         contactOnion: _selectedContact!.onionAddress,
         limit: 100,
       );
-      debugPrint('[ChatProvider] loadMessages: Got ${rawMessages.length} messages');
+      
+      if (!silent) {
+        debugPrint('[ChatProvider] loadMessages: Got ${rawMessages.length} messages');
+      }
       
       // Sanitize message text to fix UTF-16 encoding issues
-      _messages = rawMessages.map((msg) {
+      final newMessages = rawMessages.map((msg) {
         final sanitizedText = _sanitizeText(msg.text);
-        debugPrint('[ChatProvider] Message: "$sanitizedText", isSent=${msg.isSent}');
         return MessageInfo(
           id: msg.id,
           text: sanitizedText,
@@ -221,10 +224,22 @@ class ChatProvider extends ChangeNotifier {
       }).toList();
       
       // Reverse to show oldest first
-      _messages = _messages.reversed.toList();
-      notifyListeners();
+      final reversedMessages = newMessages.reversed.toList();
+      
+      // Only notify if messages changed to avoid unnecessary rebuilds
+      if (_messages.length != reversedMessages.length || 
+          _messages.isNotEmpty && reversedMessages.isNotEmpty && _messages.last.id != reversedMessages.last.id) {
+        _messages = reversedMessages;
+        notifyListeners();
+      } else {
+        // If lengths are same, check if content changed (e.g. status update)
+        _messages = reversedMessages;
+        // Don't notify if nothing meaningful changed, but updating the list reference is good practice
+      }
     } catch (e) {
-      debugPrint('[ChatProvider] Error loading messages: $e');
+      if (!silent) {
+        debugPrint('[ChatProvider] Error loading messages: $e');
+      }
     }
   }
 

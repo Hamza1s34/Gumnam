@@ -4,13 +4,21 @@ use std::collections::VecDeque;
 use once_cell::sync::Lazy;
 use tor_messenger::tor_service::TorService;
 use tor_messenger::storage::MessageStorage;
+use tor_messenger::crypto::CryptoHandler;
+use tor_messenger::peer::PeerManager;
+use tor_messenger::message::{Message as ProtocolMessage, MessageType, MessageProtocol};
 
 // Global state
 static TOR_SERVICE: Lazy<Arc<Mutex<Option<TorService>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
 static STORAGE: Lazy<Arc<Mutex<Option<MessageStorage>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
+static CRYPTO: Lazy<Arc<Mutex<Option<CryptoHandler>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
+static PEER_MANAGER: Lazy<Arc<Mutex<Option<PeerManager>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
 
 // Web messages queue for real-time updates
 static WEB_MESSAGES: Lazy<Arc<Mutex<VecDeque<WebMessageInfo>>>> = Lazy::new(|| Arc::new(Mutex::new(VecDeque::new())));
+
+// Counter for new incoming messages (to trigger UI refresh)
+static NEW_MESSAGE_COUNT: Lazy<Arc<Mutex<i32>>> = Lazy::new(|| Arc::new(Mutex::new(0)));
 
 // Special contact identifier for web messages
 pub const WEB_CONTACT_ADDRESS: &str = "web_messages_contact";
@@ -57,58 +65,30 @@ pub fn start_tor() -> anyhow::Result<String> {
     }
     drop(storage_guard);
     
+    // Initialize crypto
+    let mut crypto_guard = CRYPTO.lock().unwrap();
+    if crypto_guard.is_none() {
+        let crypto = CryptoHandler::new().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        *crypto_guard = Some(crypto);
+    }
+    drop(crypto_guard);
+    
+    // Initialize peer manager
+    let mut pm_guard = PEER_MANAGER.lock().unwrap();
+    if pm_guard.is_none() {
+        let storage_arc = Arc::new(Mutex::new(
+            MessageStorage::new().map_err(|e| anyhow::anyhow!(e.to_string()))?
+        ));
+        let pm = PeerManager::new(storage_arc);
+        *pm_guard = Some(pm);
+    }
+    drop(pm_guard);
+    
     let mut service_guard = TOR_SERVICE.lock().unwrap();
     if service_guard.is_none() {
-        // Create message handler that saves web messages
+        // Create message handler that handles ALL incoming messages
         let handler: Box<dyn Fn(String) + Send + Sync> = Box::new(|msg_str: String| {
-            // Parse web message JSON
-            if let Ok(msg_data) = serde_json::from_str::<serde_json::Value>(&msg_str) {
-                if msg_data.get("type").and_then(|v| v.as_str()) == Some("web_message") {
-                    let sender = msg_data.get("sender").and_then(|v| v.as_str()).unwrap_or("Anonymous");
-                    let text = msg_data.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                    let timestamp_str = msg_data.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
-                    
-                    let timestamp = chrono::Utc::now().timestamp();
-                    let msg_id = uuid::Uuid::new_v4().to_string();
-                    
-                    // Add to web messages queue
-                    let web_msg = WebMessageInfo {
-                        id: msg_id.clone(),
-                        sender: sender.to_string(),
-                        text: text.to_string(),
-                        timestamp,
-                    };
-                    
-                    if let Ok(mut queue) = WEB_MESSAGES.lock() {
-                        queue.push_back(web_msg);
-                        // Keep only last 100 messages in queue
-                        while queue.len() > 100 {
-                            queue.pop_front();
-                        }
-                    }
-                    
-                    // Save to storage
-                    if let Ok(storage_guard) = STORAGE.lock() {
-                        if let Some(storage) = storage_guard.as_ref() {
-                            let payload = serde_json::json!({
-                                "text": text,
-                                "web_sender": sender
-                            });
-                            let _ = storage.save_message(
-                                &msg_id,
-                                "web_message",
-                                Some(WEB_CONTACT_ADDRESS),
-                                None,
-                                &payload,
-                                timestamp,
-                                false,
-                            );
-                        }
-                    }
-                    
-                    println!("📨 [Flutter] Web message saved from '{}': {}", sender, text);
-                }
-            }
+            handle_incoming_message(&msg_str);
         });
         
         let service = TorService::new(Some(handler)); 
@@ -138,26 +118,294 @@ pub fn stop_tor() {
     }
 }
 
+/// Handle incoming messages - STRICT PROTOCOL ONLY
+/// Only accepts properly formatted encrypted protocol messages
+fn handle_incoming_message(msg_str: &str) {
+    // STRICT: Must be valid JSON
+    let msg_data = match serde_json::from_str::<serde_json::Value>(msg_str) {
+        Ok(data) => data,
+        Err(_) => {
+            // Silently ignore non-JSON messages (like PING/OK)
+            let trimmed = msg_str.trim();
+            if trimmed != "PING" && trimmed != "OK" && !trimmed.is_empty() {
+                println!("⚠ [Flutter] Rejected non-protocol message (not JSON)");
+            }
+            return;
+        }
+    };
+    
+    // Check if it's a web message (special case for web interface)
+    if msg_data.get("type").and_then(|v| v.as_str()) == Some("web_message") {
+        handle_web_message(&msg_data);
+        return;
+    }
+    
+    // STRICT: Must be a valid protocol message
+    let msg = match ProtocolMessage::from_json(msg_str) {
+        Ok(m) => m,
+        Err(_) => {
+            println!("⚠ [Flutter] Rejected invalid protocol message format");
+            return;
+        }
+    };
+    
+    // STRICT: Must have sender_id
+    if msg.sender_id.is_none() {
+        println!("⚠ [Flutter] Rejected message without sender_id");
+        return;
+    }
+    
+    match msg.msg_type {
+        MessageType::Handshake => {
+            handle_handshake_message(&msg);
+        }
+        MessageType::Text => {
+            // STRICT: Text messages MUST be encrypted
+            if msg.payload.get("encrypted").and_then(|v| v.as_bool()) != Some(true) {
+                println!("⚠ [Flutter] Rejected unencrypted text message from {:?}", msg.sender_id);
+                return;
+            }
+            handle_text_message(&msg);
+        }
+        _ => {
+            // Ignore other message types
+        }
+    }
+}
+
+/// Handle web messages from browser
+fn handle_web_message(msg_data: &serde_json::Value) {
+    let sender = msg_data.get("sender").and_then(|v| v.as_str()).unwrap_or("Anonymous");
+    let text = msg_data.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    
+    let timestamp = chrono::Utc::now().timestamp();
+    let msg_id = uuid::Uuid::new_v4().to_string();
+    
+    // Add to web messages queue
+    let web_msg = WebMessageInfo {
+        id: msg_id.clone(),
+        sender: sender.to_string(),
+        text: text.to_string(),
+        timestamp,
+    };
+    
+    if let Ok(mut queue) = WEB_MESSAGES.lock() {
+        queue.push_back(web_msg);
+        while queue.len() > 100 {
+            queue.pop_front();
+        }
+    }
+    
+    // Save to storage
+    if let Ok(storage_guard) = STORAGE.lock() {
+        if let Some(storage) = storage_guard.as_ref() {
+            let payload = serde_json::json!({
+                "text": text,
+                "web_sender": sender
+            });
+            let _ = storage.save_message(
+                &msg_id,
+                "web_message",
+                Some(WEB_CONTACT_ADDRESS),
+                None,
+                &payload,
+                timestamp,
+                false,
+            );
+        }
+    }
+    
+    // Increment new message counter
+    if let Ok(mut count) = NEW_MESSAGE_COUNT.lock() {
+        *count += 1;
+    }
+    
+    println!("📨 [Flutter] Web message from '{}': {}", sender, text);
+}
+
+/// Handle handshake messages - exchange keys with peers
+fn handle_handshake_message(msg: &ProtocolMessage) {
+    // sender_id is guaranteed to exist (checked in handle_incoming_message)
+    let sender_id = msg.sender_id.as_ref().unwrap();
+    
+    // STRICT: Must have public_key in payload
+    let public_key = match msg.payload.get("public_key").and_then(|v| v.as_str()) {
+        Some(pk) => pk,
+        None => {
+            println!("⚠ [Flutter] Rejected handshake without public_key from {}", sender_id);
+            return;
+        }
+    };
+    
+    let is_response = msg.payload.get("is_response")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    
+    // Save the sender's public key
+    if let Ok(mut pm) = PEER_MANAGER.lock() {
+        if let Some(ref mut peer_manager) = *pm {
+            let _ = peer_manager.add_peer(sender_id, None, Some(public_key));
+            peer_manager.mark_peer_online(sender_id, None);
+        }
+    }
+    
+    if is_response {
+        println!("✓ [Flutter] Response handshake from: {} (key exchange complete)", sender_id);
+    } else {
+        println!("✓ [Flutter] Handshake from: {} (sending response)", sender_id);
+        
+        // Send response handshake with our public key
+        if let Ok(crypto_guard) = CRYPTO.lock() {
+            if let Some(ref crypto) = *crypto_guard {
+                if let Ok(our_pk) = crypto.get_public_key_pem() {
+                    let our_onion = get_onion_address();
+                    let response_handshake = MessageProtocol::create_handshake_message(&our_onion, &our_pk, true);
+                    
+                    if let Ok(json) = response_handshake.to_json() {
+                        let peer = sender_id.clone();
+                        let json_clone = json.clone();
+                        std::thread::spawn(move || {
+                            let service_guard = TOR_SERVICE.lock().unwrap();
+                            if let Some(ref service) = *service_guard {
+                                match service.send_message(&peer, &json_clone) {
+                                    Ok(_) => println!("✓ [Flutter] Response handshake sent to {}", peer),
+                                    Err(e) => println!("✗ [Flutter] Response handshake failed: {}", e),
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Handle encrypted text messages - STRICT: Only encrypted messages accepted
+fn handle_text_message(msg: &ProtocolMessage) {
+    // sender_id is guaranteed to exist (checked in handle_incoming_message)
+    let sender = msg.sender_id.as_ref().unwrap();
+    
+    // STRICT: encrypted flag already verified in handle_incoming_message
+    // STRICT: Must have data field
+    let data = match msg.payload.get("data") {
+        Some(d) => d,
+        None => {
+            println!("⚠ [Flutter] Rejected encrypted message without data from {}", sender);
+            return;
+        }
+    };
+    
+    // STRICT: Must be valid EncryptedData structure
+    let encrypted_data = match serde_json::from_value::<tor_messenger::crypto::EncryptedData>(data.clone()) {
+        Ok(ed) => ed,
+        Err(_) => {
+            println!("⚠ [Flutter] Rejected invalid encrypted data format from {}", sender);
+            return;
+        }
+    };
+    
+    // Decrypt the message
+    if let Ok(crypto_guard) = CRYPTO.lock() {
+        if let Some(ref crypto) = *crypto_guard {
+            match crypto.decrypt_message(&encrypted_data) {
+                Ok(decrypted_text) => {
+                    println!("← [Flutter] From {}: {}", sender, decrypted_text);
+                    
+                    // Save to storage
+                    if let Ok(storage_guard) = STORAGE.lock() {
+                        if let Some(storage) = storage_guard.as_ref() {
+                            let payload = serde_json::json!({"text": &decrypted_text});
+                            let _ = storage.save_message(
+                                &msg.id,
+                                "text",
+                                msg.sender_id.as_deref(),
+                                msg.recipient_id.as_deref(),
+                                &payload,
+                                msg.timestamp,
+                                false,
+                            );
+                        }
+                    }
+                    
+                    // Increment new message counter
+                    if let Ok(mut count) = NEW_MESSAGE_COUNT.lock() {
+                        *count += 1;
+                    }
+                }
+                Err(e) => {
+                    println!("✗ [Flutter] Decryption error from {}: {}", sender, e);
+                }
+            }
+        }
+    }
+}
+
+/// Get count of new messages since last check (for polling)
+pub fn get_new_message_count() -> i32 {
+    if let Ok(mut count) = NEW_MESSAGE_COUNT.lock() {
+        let current = *count;
+        *count = 0;  // Reset after reading
+        current
+    } else {
+        0
+    }
+}
+
 pub fn send_message(onion_address: String, message: String) -> anyhow::Result<bool> {
     let service_guard = TOR_SERVICE.lock().unwrap();
     if let Some(service) = service_guard.as_ref() {
+        let my_address = service.get_onion_address().unwrap_or_default();
+        
+        // STRICT VALIDATION: Get recipient's public key - REQUIRED for encryption
+        let pm_guard = PEER_MANAGER.lock().unwrap();
+        let public_key = pm_guard.as_ref().and_then(|pm| pm.get_peer_public_key(&onion_address));
+        drop(pm_guard);
+        
+        // STRICT: Public key is REQUIRED - no unencrypted messages allowed
+        let pk = public_key.ok_or_else(|| {
+            anyhow::anyhow!("Cannot send message: No public key for recipient. Please exchange handshake first.")
+        })?;
+        
+        // STRICT: Crypto handler is REQUIRED
+        let crypto_guard = CRYPTO.lock().unwrap();
+        let crypto = crypto_guard.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Cannot send message: Crypto not initialized.")
+        })?;
+        
+        // STRICT: Encrypt the message - REQUIRED, no fallback to plaintext
+        let encrypted_data = crypto.encrypt_message(&message, &pk)
+            .map_err(|e| anyhow::anyhow!("Encryption failed: {}. Message NOT sent.", e))?;
+        
+        // Create encrypted protocol message with sender_id
+        let msg = MessageProtocol::wrap_encrypted_message(
+            &encrypted_data,
+            &my_address,
+            &onion_address,
+        );
+        let msg_id = msg.id.clone();
+        let timestamp = msg.timestamp;
+        let msg_json = msg.to_json().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        
+        drop(crypto_guard);
+        
         // Save sent message to storage
         let storage_guard = STORAGE.lock().unwrap();
         if let Some(storage) = storage_guard.as_ref() {
-            let msg_id = uuid::Uuid::new_v4().to_string();
             let payload = serde_json::json!({"text": message});
-            let my_address = service.get_onion_address().unwrap_or_default();
             let _ = storage.save_message(
                 &msg_id,
                 "text",
                 Some(&my_address),
                 Some(&onion_address),
                 &payload,
-                chrono::Utc::now().timestamp(),
+                timestamp,
                 true,
             );
         }
-        service.send_message(&onion_address, &message).map_err(|e| anyhow::anyhow!(e.to_string()))
+        drop(storage_guard);
+        
+        // Send the encrypted protocol message
+        service.send_message(&onion_address, &msg_json).map_err(|e| anyhow::anyhow!(e.to_string()))
     } else {
         Err(anyhow::anyhow!("Tor service not started"))
     }

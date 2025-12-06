@@ -280,105 +280,163 @@ fn handle_incoming_message(
 ) {
     use crate::message::{Message as ProtocolMessage, MessageType};
 
-    // Try to parse as JSON
-    if let Ok(msg_data) = serde_json::from_str::<serde_json::Value>(message_str) {
-        // Check if it's a web message
-        if msg_data.get("type").and_then(|v| v.as_str()) == Some("web_message") {
-            let sender = msg_data.get("sender").and_then(|v| v.as_str()).unwrap_or("Anonymous");
-            let text = msg_data.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            println!("\n[🌐 WEB] From '{}': {}", sender, text);
+    // STRICT: Must be valid JSON
+    let msg_data = match serde_json::from_str::<serde_json::Value>(message_str) {
+        Ok(data) => data,
+        Err(_) => {
+            // Silently ignore non-JSON messages (like PING/OK)
+            let trimmed = message_str.trim();
+            if trimmed != "PING" && trimmed != "OK" && !trimmed.is_empty() {
+                println!("\n[⚠] Rejected non-protocol message (not JSON)");
+                print!("> ");
+                io::stdout().flush().ok();
+            }
+            return;
+        }
+    };
+
+    // Check if it's a web message
+    if msg_data.get("type").and_then(|v| v.as_str()) == Some("web_message") {
+        let sender = msg_data.get("sender").and_then(|v| v.as_str()).unwrap_or("Anonymous");
+        let text = msg_data.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        println!("\n[🌐 WEB] From '{}': {}", sender, text);
+        print!("> ");
+        io::stdout().flush().ok();
+        return;
+    }
+
+    // STRICT: Must be a valid protocol message
+    let msg = match ProtocolMessage::from_json(message_str) {
+        Ok(m) => m,
+        Err(_) => {
+            println!("\n[⚠] Rejected invalid protocol message format");
             print!("> ");
             io::stdout().flush().ok();
             return;
         }
+    };
 
-        // Handle protocol messages
-        if let Ok(msg) = ProtocolMessage::from_json(message_str) {
-            match msg.msg_type {
-                MessageType::Handshake => {
-                    if let Some(sender_id) = &msg.sender_id {
-                        if let Some(public_key) = msg.payload.get("public_key").and_then(|v| v.as_str()) {
-                            // Check if this is a response handshake
-                            let is_response = msg.payload.get("is_response")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            
-                            // Save the sender's public key
-                            if let Ok(mut pm) = peer_manager.lock() {
-                                let _ = pm.add_peer(sender_id, None, Some(public_key));
-                                pm.mark_peer_online(sender_id, None);
-                            }
-                            
-                            if is_response {
-                                println!("\n[✓] Response handshake from: {} (key saved) - exchange complete!", sender_id);
-                            } else {
-                                println!("\n[✓] Handshake from: {} (key saved)", sender_id);
-                                
-                                // Only send response if this is NOT a response handshake
-                                let our_pk = crypto.lock().unwrap().get_public_key_pem().unwrap_or_default();
-                                let response_handshake = MessageProtocol::create_handshake_message(our_onion_address, &our_pk, true);
-                                
-                                if let Ok(json) = response_handshake.to_json() {
-                                    let tor = Arc::clone(tor_service);
-                                    let peer = sender_id.clone();
-                                    thread::spawn(move || {
-                                        println!("[*] Sending response handshake to {}...", peer);
-                                        match tor.send_message(&peer, &json) {
-                                            Ok(_) => println!("[✓] Response handshake sent to {}", peer),
-                                            Err(e) => println!("[!] Response handshake failed: {}", e),
-                                        }
-                                        print!("> ");
-                                        io::stdout().flush().ok();
-                                    });
-                                }
-                            }
-                            
-                            print!("> ");
-                            io::stdout().flush().ok();
-                        }
-                    }
-                }
-                MessageType::Text => {
-                    if msg.payload.get("encrypted").and_then(|v| v.as_bool()) == Some(true) {
-                        if let Some(data) = msg.payload.get("data") {
-                            if let Ok(encrypted_data) = serde_json::from_value::<crate::crypto::EncryptedData>(data.clone()) {
-                                let decrypt_result = crypto.lock().unwrap().decrypt_message(&encrypted_data);
-                                
-                                match decrypt_result {
-                                    Ok(decrypted_text) => {
-                                        let sender = msg.sender_id.as_deref().unwrap_or("Unknown");
-                                        println!("\n[←] From {}: {}", sender, decrypted_text);
-                                        print!("> ");
-                                        io::stdout().flush().ok();
-
-                                        // Save to storage
-                                        if let Ok(s) = storage.lock() {
-                                            let payload = serde_json::json!({"text": &decrypted_text});
-                                            let _ = s.save_message(
-                                                &msg.id, "text",
-                                                msg.sender_id.as_deref(),
-                                                msg.recipient_id.as_deref(),
-                                                &payload, msg.timestamp, false,
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("\n[✗] Decryption error: {}", e);
-                                        print!("> ");
-                                        io::stdout().flush().ok();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    } else {
-        println!("\n[←] Raw: {}", message_str);
+    // STRICT: Must have sender_id
+    if msg.sender_id.is_none() {
+        println!("\n[⚠] Rejected message without sender_id");
         print!("> ");
         io::stdout().flush().ok();
+        return;
+    }
+
+    match msg.msg_type {
+        MessageType::Handshake => {
+            let sender_id = msg.sender_id.as_ref().unwrap();
+            
+            // STRICT: Must have public_key
+            let public_key = match msg.payload.get("public_key").and_then(|v| v.as_str()) {
+                Some(pk) => pk,
+                None => {
+                    println!("\n[⚠] Rejected handshake without public_key from {}", sender_id);
+                    print!("> ");
+                    io::stdout().flush().ok();
+                    return;
+                }
+            };
+            
+            let is_response = msg.payload.get("is_response")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            
+            // Save the sender's public key
+            if let Ok(mut pm) = peer_manager.lock() {
+                let _ = pm.add_peer(sender_id, None, Some(public_key));
+                pm.mark_peer_online(sender_id, None);
+            }
+            
+            if is_response {
+                println!("\n[✓] Response handshake from: {} (key saved) - exchange complete!", sender_id);
+            } else {
+                println!("\n[✓] Handshake from: {} (key saved)", sender_id);
+                
+                // Send response handshake
+                let our_pk = crypto.lock().unwrap().get_public_key_pem().unwrap_or_default();
+                let response_handshake = MessageProtocol::create_handshake_message(our_onion_address, &our_pk, true);
+                
+                if let Ok(json) = response_handshake.to_json() {
+                    let tor = Arc::clone(tor_service);
+                    let peer = sender_id.clone();
+                    thread::spawn(move || {
+                        println!("[*] Sending response handshake to {}...", peer);
+                        match tor.send_message(&peer, &json) {
+                            Ok(_) => println!("[✓] Response handshake sent to {}", peer),
+                            Err(e) => println!("[✗] Response handshake failed: {}", e),
+                        }
+                        print!("> ");
+                        io::stdout().flush().ok();
+                    });
+                }
+            }
+            
+            print!("> ");
+            io::stdout().flush().ok();
+        }
+        MessageType::Text => {
+            let sender = msg.sender_id.as_ref().unwrap();
+            
+            // STRICT: Text messages MUST be encrypted
+            if msg.payload.get("encrypted").and_then(|v| v.as_bool()) != Some(true) {
+                println!("\n[⚠] Rejected unencrypted text message from {}", sender);
+                print!("> ");
+                io::stdout().flush().ok();
+                return;
+            }
+            
+            // STRICT: Must have data field
+            let data = match msg.payload.get("data") {
+                Some(d) => d,
+                None => {
+                    println!("\n[⚠] Rejected encrypted message without data from {}", sender);
+                    print!("> ");
+                    io::stdout().flush().ok();
+                    return;
+                }
+            };
+            
+            // STRICT: Must be valid EncryptedData structure
+            let encrypted_data = match serde_json::from_value::<crate::crypto::EncryptedData>(data.clone()) {
+                Ok(ed) => ed,
+                Err(_) => {
+                    println!("\n[⚠] Rejected invalid encrypted data format from {}", sender);
+                    print!("> ");
+                    io::stdout().flush().ok();
+                    return;
+                }
+            };
+            
+            // Decrypt the message
+            match crypto.lock().unwrap().decrypt_message(&encrypted_data) {
+                Ok(decrypted_text) => {
+                    println!("\n[←] From {}: {}", sender, decrypted_text);
+                    print!("> ");
+                    io::stdout().flush().ok();
+
+                    // Save to storage
+                    if let Ok(s) = storage.lock() {
+                        let payload = serde_json::json!({"text": &decrypted_text});
+                        let _ = s.save_message(
+                            &msg.id, "text",
+                            msg.sender_id.as_deref(),
+                            msg.recipient_id.as_deref(),
+                            &payload, msg.timestamp, false,
+                        );
+                    }
+                }
+                Err(e) => {
+                    println!("\n[✗] Decryption error from {}: {}", sender, e);
+                    print!("> ");
+                    io::stdout().flush().ok();
+                }
+            }
+        }
+        _ => {
+            // Ignore other message types silently
+        }
     }
 }
 
