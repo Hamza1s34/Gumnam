@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => 565304925;
+  int get rustContentHash => -1187041609;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -88,12 +88,18 @@ abstract class RustLibApi extends BaseApi {
 
   Future<bool> crateApiDeleteContact({required String onionAddress});
 
+  Future<ContactDetails> crateApiGetContactDetails({
+    required String onionAddress,
+  });
+
   Future<List<ContactInfo>> crateApiGetContacts();
 
   Future<List<MessageInfo>> crateApiGetMessages({
     String? contactOnion,
     required int limit,
   });
+
+  Future<String> crateApiGetMyPublicKey();
 
   Future<int> crateApiGetNewMessageCount();
 
@@ -105,6 +111,8 @@ abstract class RustLibApi extends BaseApi {
 
   Future<void> crateApiInitApp();
 
+  Future<bool> crateApiSendHandshakeToContact({required String onionAddress});
+
   Future<bool> crateApiSendMessage({
     required String onionAddress,
     required String message,
@@ -113,6 +121,11 @@ abstract class RustLibApi extends BaseApi {
   Future<String> crateApiStartTor();
 
   Future<void> crateApiStopTor();
+
+  Future<bool> crateApiUpdateContactNickname({
+    required String onionAddress,
+    required String nickname,
+  });
 }
 
 class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
@@ -244,6 +257,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<ContactDetails> crateApiGetContactDetails({
+    required String onionAddress,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(onionAddress, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 5,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_contact_details,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiGetContactDetailsConstMeta,
+        argValues: [onionAddress],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiGetContactDetailsConstMeta => const TaskConstMeta(
+    debugName: "get_contact_details",
+    argNames: ["onionAddress"],
+  );
+
+  @override
   Future<List<ContactInfo>> crateApiGetContacts() {
     return handler.executeNormal(
       NormalTask(
@@ -252,7 +297,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 6,
             port: port_,
           );
         },
@@ -284,7 +329,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 7,
             port: port_,
           );
         },
@@ -305,6 +350,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<String> crateApiGetMyPublicKey() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 8,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiGetMyPublicKeyConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiGetMyPublicKeyConstMeta =>
+      const TaskConstMeta(debugName: "get_my_public_key", argNames: []);
+
+  @override
   Future<int> crateApiGetNewMessageCount() {
     return handler.executeNormal(
       NormalTask(
@@ -313,7 +385,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 9,
             port: port_,
           );
         },
@@ -340,7 +412,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 10,
             port: port_,
           );
         },
@@ -367,7 +439,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 11,
             port: port_,
           );
         },
@@ -394,7 +466,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 12,
             port: port_,
           );
         },
@@ -421,7 +493,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 13,
             port: port_,
           );
         },
@@ -440,6 +512,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "init_app", argNames: []);
 
   @override
+  Future<bool> crateApiSendHandshakeToContact({required String onionAddress}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(onionAddress, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 14,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSendHandshakeToContactConstMeta,
+        argValues: [onionAddress],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSendHandshakeToContactConstMeta =>
+      const TaskConstMeta(
+        debugName: "send_handshake_to_contact",
+        argNames: ["onionAddress"],
+      );
+
+  @override
   Future<bool> crateApiSendMessage({
     required String onionAddress,
     required String message,
@@ -453,7 +556,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 15,
             port: port_,
           );
         },
@@ -482,7 +585,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 16,
             port: port_,
           );
         },
@@ -509,7 +612,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 17,
             port: port_,
           );
         },
@@ -526,6 +629,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiStopTorConstMeta =>
       const TaskConstMeta(debugName: "stop_tor", argNames: []);
+
+  @override
+  Future<bool> crateApiUpdateContactNickname({
+    required String onionAddress,
+    required String nickname,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(onionAddress, serializer);
+          sse_encode_String(nickname, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 18,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiUpdateContactNicknameConstMeta,
+        argValues: [onionAddress, nickname],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiUpdateContactNicknameConstMeta =>
+      const TaskConstMeta(
+        debugName: "update_contact_nickname",
+        argNames: ["onionAddress", "nickname"],
+      );
 
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw) {
@@ -552,15 +690,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ContactDetails dco_decode_contact_details(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    return ContactDetails(
+      onionAddress: dco_decode_String(arr[0]),
+      nickname: dco_decode_String(arr[1]),
+      publicKey: dco_decode_opt_String(arr[2]),
+      lastSeen: dco_decode_opt_box_autoadd_i_64(arr[3]),
+      firstMessageTime: dco_decode_opt_box_autoadd_i_64(arr[4]),
+      lastMessageTime: dco_decode_opt_box_autoadd_i_64(arr[5]),
+      totalMessages: dco_decode_i_32(arr[6]),
+    );
+  }
+
+  @protected
   ContactInfo dco_decode_contact_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
     return ContactInfo(
       onionAddress: dco_decode_String(arr[0]),
       nickname: dco_decode_String(arr[1]),
       lastSeen: dco_decode_opt_box_autoadd_i_64(arr[2]),
+      publicKey: dco_decode_opt_String(arr[3]),
     );
   }
 
@@ -682,15 +838,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ContactDetails sse_decode_contact_details(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_onionAddress = sse_decode_String(deserializer);
+    var var_nickname = sse_decode_String(deserializer);
+    var var_publicKey = sse_decode_opt_String(deserializer);
+    var var_lastSeen = sse_decode_opt_box_autoadd_i_64(deserializer);
+    var var_firstMessageTime = sse_decode_opt_box_autoadd_i_64(deserializer);
+    var var_lastMessageTime = sse_decode_opt_box_autoadd_i_64(deserializer);
+    var var_totalMessages = sse_decode_i_32(deserializer);
+    return ContactDetails(
+      onionAddress: var_onionAddress,
+      nickname: var_nickname,
+      publicKey: var_publicKey,
+      lastSeen: var_lastSeen,
+      firstMessageTime: var_firstMessageTime,
+      lastMessageTime: var_lastMessageTime,
+      totalMessages: var_totalMessages,
+    );
+  }
+
+  @protected
   ContactInfo sse_decode_contact_info(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_onionAddress = sse_decode_String(deserializer);
     var var_nickname = sse_decode_String(deserializer);
     var var_lastSeen = sse_decode_opt_box_autoadd_i_64(deserializer);
+    var var_publicKey = sse_decode_opt_String(deserializer);
     return ContactInfo(
       onionAddress: var_onionAddress,
       nickname: var_nickname,
       lastSeen: var_lastSeen,
+      publicKey: var_publicKey,
     );
   }
 
@@ -851,11 +1030,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_contact_details(
+    ContactDetails self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.onionAddress, serializer);
+    sse_encode_String(self.nickname, serializer);
+    sse_encode_opt_String(self.publicKey, serializer);
+    sse_encode_opt_box_autoadd_i_64(self.lastSeen, serializer);
+    sse_encode_opt_box_autoadd_i_64(self.firstMessageTime, serializer);
+    sse_encode_opt_box_autoadd_i_64(self.lastMessageTime, serializer);
+    sse_encode_i_32(self.totalMessages, serializer);
+  }
+
+  @protected
   void sse_encode_contact_info(ContactInfo self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.onionAddress, serializer);
     sse_encode_String(self.nickname, serializer);
     sse_encode_opt_box_autoadd_i_64(self.lastSeen, serializer);
+    sse_encode_opt_String(self.publicKey, serializer);
   }
 
   @protected

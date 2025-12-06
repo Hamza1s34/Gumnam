@@ -3,6 +3,11 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:tor_messenger_ui/services/chat_provider.dart';
 import 'package:tor_messenger_ui/theme/app_theme.dart';
+import 'package:tor_messenger_ui/widgets/dialogs/contact_info_dialog.dart';
+import 'package:tor_messenger_ui/widgets/chat/contact_info_view.dart';
+import 'package:tor_messenger_ui/widgets/profile/my_profile_view.dart';
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
+import 'dart:io';
 
 class ChatArea extends StatefulWidget {
   const ChatArea({super.key});
@@ -15,6 +20,7 @@ class _ChatAreaState extends State<ChatArea> {
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
   bool _isSending = false;
+  bool _showEmoji = false;
 
   @override
   void dispose() {
@@ -92,14 +98,37 @@ class _ChatAreaState extends State<ChatArea> {
     }
   }
 
+  String _safeSubstring(String text, int start, [int? end]) {
+    final sanitized = _sanitizeText(text);
+    if (sanitized.isEmpty) return '?';
+    final actualEnd = end != null ? (end > sanitized.length ? sanitized.length : end) : null;
+    final actualStart = start >= sanitized.length ? 0 : start;
+    return sanitized.substring(actualStart, actualEnd);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Consumer<ChatProvider>(
       builder: (context, chatProvider, child) {
         final selectedContact = chatProvider.selectedContact;
         
+        // Show my profile view if requested
+        if (chatProvider.showingMyProfile) {
+          return MyProfileView(
+            onBack: () => chatProvider.hideMyProfile(),
+          );
+        }
+
         if (selectedContact == null) {
           return _buildEmptyState();
+        }
+
+        // Show contact info view if requested (not for web messages)
+        if (chatProvider.showingContactInfo && !chatProvider.isViewingWebMessages) {
+          return ContactInfoView(
+            onionAddress: selectedContact.onionAddress,
+            onBack: () => chatProvider.hideContactInfo(),
+          );
         }
 
         return Container(
@@ -113,9 +142,62 @@ class _ChatAreaState extends State<ChatArea> {
                 child: _buildMessageList(chatProvider),
               ),
               // Input (hide for web messages)
-              if (!chatProvider.isViewingWebMessages)
-                _buildInputArea()
-              else
+              if (!chatProvider.isViewingWebMessages) ...[
+                _buildInputArea(),
+                if (_showEmoji)
+                  SizedBox(
+                    height: 250,
+                    child: EmojiPicker(
+                      onEmojiSelected: (category, emoji) {
+                        // Do nothing here, controller handling is enough usually but 
+                        // we might need to manually insert if the package doesn't autodect controller
+                        // actually newer versions usually need textEditingController
+                        // Let's check constructor params in a second or just implement manual insertion
+                      },
+                      textEditingController: _messageController,
+                      config: Config(
+                        height: 256,
+                        checkPlatformCompatibility: true,
+                        emojiViewConfig: EmojiViewConfig(
+                          // Tighter WhatsApp-like layout
+                          emojiSizeMax: 21 * (Platform.isIOS ? 1.30 : 1.0),
+                          columns: 10,
+                          verticalSpacing: 0,
+                          horizontalSpacing: 0,
+                          backgroundColor: AppTheme.sidebarBackground,
+                          recentsLimit: 50, // Increase recents limit
+                          buttonMode: ButtonMode.CUPERTINO,
+                        ),
+                        skinToneConfig: const SkinToneConfig(
+                          enabled: true,
+                        ),
+                        categoryViewConfig: const CategoryViewConfig(
+                          initCategory: Category.RECENT,
+                          backgroundColor: AppTheme.sidebarBackground,
+                          indicatorColor: AppTheme.primaryPurple,
+                          iconColor: Colors.grey,
+                          iconColorSelected: AppTheme.primaryPurple,
+                          backspaceColor: AppTheme.primaryPurple,
+                          dividerColor: AppTheme.sidebarBackground,
+                          tabBarHeight: 46,
+                        ),
+                        bottomActionBarConfig: const BottomActionBarConfig(
+                          backgroundColor: AppTheme.sidebarBackground,
+                          buttonColor: AppTheme.sidebarBackground,
+                          buttonIconColor: Colors.grey,
+                          showBackspaceButton: false, // Cleaner look
+                          showSearchViewButton: true,
+                        ),
+                        searchViewConfig: const SearchViewConfig(
+                          backgroundColor: AppTheme.sidebarBackground,
+                          buttonIconColor: Colors.grey,
+                          hintTextStyle: TextStyle(color: Colors.grey),
+                          inputTextStyle: TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  ),
+              ] else
                 _buildWebMessageNotice(),
             ],
           ),
@@ -162,35 +244,43 @@ class _ChatAreaState extends State<ChatArea> {
       color: AppTheme.sidebarBackground,
       child: Row(
         children: [
-          CircleAvatar(
-            backgroundColor: isWebMessages ? Colors.blue : AppTheme.primaryPurple,
-            child: isWebMessages
-                ? const Icon(Icons.public, color: Colors.white)
-                : Text(
-                    contact.nickname.substring(0, 1).toUpperCase(),
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                  ),
+          // Make avatar clickable to show contact info (not for web messages)
+          GestureDetector(
+            onTap: isWebMessages ? null : () => context.read<ChatProvider>().showContactInfo(),
+            child: CircleAvatar(
+              backgroundColor: isWebMessages ? Colors.blue : AppTheme.primaryPurple,
+              child: isWebMessages
+                  ? const Icon(Icons.public, color: Colors.white)
+                  : Text(
+                      _safeSubstring(contact.nickname, 0, 1).toUpperCase(),
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
+            ),
           ),
           const SizedBox(width: 12),
+          // Make name clickable to show contact info (not for web messages)
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  contact.nickname,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.textPrimary,
+            child: GestureDetector(
+              onTap: isWebMessages ? null : () => context.read<ChatProvider>().showContactInfo(),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _sanitizeText(contact.nickname),
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.textPrimary,
+                    ),
                   ),
-                ),
-                Text(
-                  isWebMessages 
-                      ? 'Messages from your .onion web page'
-                      : '${contact.onionAddress.substring(0, contact.onionAddress.length > 24 ? 24 : contact.onionAddress.length)}...',
-                  style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-                ),
-              ],
+                  Text(
+                    isWebMessages 
+                        ? 'Messages from your .onion web page'
+                        : '${_safeSubstring(contact.onionAddress, 0, 24)}...',
+                    style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+                  ),
+                ],
+              ),
             ),
           ),
           IconButton(
@@ -203,6 +293,14 @@ class _ChatAreaState extends State<ChatArea> {
             color: AppTheme.sidebarBackground,
             onSelected: (value) {
               switch (value) {
+                case 'info':
+                  if (!isWebMessages) {
+                    showDialog(
+                      context: context,
+                      builder: (context) => ContactInfoDialog(onionAddress: contact.onionAddress),
+                    );
+                  }
+                  break;
                 case 'clear':
                   _confirmClearChat(context, contact);
                   break;
@@ -215,6 +313,17 @@ class _ChatAreaState extends State<ChatArea> {
               }
             },
             itemBuilder: (context) => [
+              if (!isWebMessages)
+                const PopupMenuItem<String>(
+                  value: 'info',
+                  child: Row(
+                    children: [
+                      Icon(Icons.info_outline, color: AppTheme.primaryPurple, size: 20),
+                      SizedBox(width: 12),
+                      Text('Contact Info', style: TextStyle(color: AppTheme.primaryPurple)),
+                    ],
+                  ),
+                ),
               const PopupMenuItem<String>(
                 value: 'clear',
                 child: Row(
@@ -421,8 +530,20 @@ class _ChatAreaState extends State<ChatArea> {
       child: Row(
         children: [
           IconButton(
-            icon: const Icon(Icons.emoji_emotions_outlined),
-            onPressed: () {},
+            icon: Icon(
+              _showEmoji ? Icons.keyboard : Icons.emoji_emotions_outlined,
+              color: _showEmoji ? AppTheme.primaryPurple : null,
+            ),
+            onPressed: () {
+              setState(() {
+                _showEmoji = !_showEmoji;
+              });
+              if (_showEmoji) {
+                FocusScope.of(context).unfocus();
+              } else {
+                FocusScope.of(context).requestFocus();
+              }
+            },
           ),
           IconButton(
             icon: const Icon(Icons.attach_file),
@@ -432,6 +553,11 @@ class _ChatAreaState extends State<ChatArea> {
             child: TextField(
               controller: _messageController,
               onSubmitted: (_) => _sendMessage(),
+              onTap: () {
+                if (_showEmoji) {
+                  setState(() => _showEmoji = false);
+                }
+              },
               decoration: InputDecoration(
                 hintText: 'Type a message',
                 filled: true,

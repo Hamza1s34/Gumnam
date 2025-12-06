@@ -33,6 +33,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
 
   @protected
+  ContactDetails dco_decode_contact_details(dynamic raw);
+
+  @protected
   ContactInfo dco_decode_contact_info(dynamic raw);
 
   @protected
@@ -82,6 +85,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
+
+  @protected
+  ContactDetails sse_decode_contact_details(SseDeserializer deserializer);
 
   @protected
   ContactInfo sse_decode_contact_info(SseDeserializer deserializer);
@@ -139,6 +145,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_i_64(
     PlatformInt64 self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_contact_details(
+    ContactDetails self,
     SseSerializer serializer,
   );
 

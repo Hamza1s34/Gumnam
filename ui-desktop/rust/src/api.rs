@@ -29,6 +29,19 @@ pub struct ContactInfo {
     pub onion_address: String,
     pub nickname: String,
     pub last_seen: Option<i64>,
+    pub public_key: Option<String>,
+}
+
+/// Detailed contact information for the contact info dialog
+#[derive(Debug, Clone)]
+pub struct ContactDetails {
+    pub onion_address: String,
+    pub nickname: String,
+    pub public_key: Option<String>,
+    pub last_seen: Option<i64>,
+    pub first_message_time: Option<i64>,
+    pub last_message_time: Option<i64>,
+    pub total_messages: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +128,17 @@ pub fn stop_tor() {
     let mut service_guard = TOR_SERVICE.lock().unwrap();
     if let Some(service) = service_guard.take() {
         service.stop();
+    }
+}
+
+/// Get my own public key
+pub fn get_my_public_key() -> anyhow::Result<String> {
+    let crypto_guard = CRYPTO.lock().unwrap();
+    if let Some(crypto) = crypto_guard.as_ref() {
+        crypto.get_public_key_pem()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
+    } else {
+        Err(anyhow::anyhow!("Crypto not initialized"))
     }
 }
 
@@ -241,10 +265,18 @@ fn handle_handshake_message(msg: &ProtocolMessage) {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     
-    // Save the sender's public key
+    // Save the sender's public key (preserving existing nickname)
     if let Ok(mut pm) = PEER_MANAGER.lock() {
         if let Some(ref mut peer_manager) = *pm {
-            let _ = peer_manager.add_peer(sender_id, None, Some(public_key));
+            // First check if contact exists - if so, update key preserving nickname
+            // If not, create new contact with address prefix as nickname
+            if peer_manager.get_peer(sender_id).ok().flatten().is_some() {
+                let _ = peer_manager.update_peer_key(sender_id, public_key);
+            } else {
+                // New contact - use first 8 chars of address as nickname
+                let default_nickname = &sender_id[..std::cmp::min(8, sender_id.len())];
+                let _ = peer_manager.add_peer(sender_id, Some(default_nickname), Some(public_key));
+            }
             peer_manager.mark_peer_online(sender_id, None);
         }
     }
@@ -280,10 +312,39 @@ fn handle_handshake_message(msg: &ProtocolMessage) {
     }
 }
 
+/// Initiate a handshake with a peer to exchange public keys
+fn initiate_handshake(peer_address: &str) {
+    println!("🤝 [Flutter] Initiating handshake with {}", peer_address);
+    
+    if let Ok(crypto_guard) = CRYPTO.lock() {
+        if let Some(ref crypto) = *crypto_guard {
+            if let Ok(our_pk) = crypto.get_public_key_pem() {
+                let our_onion = get_onion_address();
+                // is_response = false because we are initiating
+                let handshake = MessageProtocol::create_handshake_message(&our_onion, &our_pk, false);
+                
+                if let Ok(json) = handshake.to_json() {
+                    let peer = peer_address.to_string();
+                    let json_clone = json.clone();
+                    std::thread::spawn(move || {
+                        let service_guard = TOR_SERVICE.lock().unwrap();
+                        if let Some(ref service) = *service_guard {
+                            match service.send_message(&peer, &json_clone) {
+                                Ok(_) => println!("✓ [Flutter] Handshake sent to {}", peer),
+                                Err(e) => println!("✗ [Flutter] Handshake failed to {}: {}", peer, e),
+                            }
+                        }
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// Handle encrypted text messages - STRICT: Only encrypted messages accepted
 fn handle_text_message(msg: &ProtocolMessage) {
     // sender_id is guaranteed to exist (checked in handle_incoming_message)
-    let sender = msg.sender_id.as_ref().unwrap();
+    let sender = msg.sender_id.as_ref().unwrap().clone();
     
     // STRICT: encrypted flag already verified in handle_incoming_message
     // STRICT: Must have data field
@@ -303,6 +364,40 @@ fn handle_text_message(msg: &ProtocolMessage) {
             return;
         }
     };
+    
+    // Check if sender is a known contact, if not create one and initiate handshake
+    let is_new_contact = {
+        let pm_guard = PEER_MANAGER.lock().ok();
+        let storage_guard = STORAGE.lock().ok();
+        
+        let has_public_key = pm_guard.as_ref()
+            .and_then(|pm| pm.as_ref())
+            .and_then(|pm| pm.get_peer_public_key(&sender))
+            .is_some();
+        
+        let contact_exists = storage_guard.as_ref()
+            .and_then(|s| s.as_ref())
+            .and_then(|s| s.get_contact(&sender).ok())
+            .is_some();
+        
+        !has_public_key || !contact_exists
+    };
+    
+    if is_new_contact {
+        println!("📱 [Flutter] New contact detected: {}", sender);
+        
+        // Create contact in storage with sender address as nickname
+        if let Ok(storage_guard) = STORAGE.lock() {
+            if let Some(storage) = storage_guard.as_ref() {
+                let default_nickname = &sender[..std::cmp::min(16, sender.len())];
+                let _ = storage.add_contact(&sender, Some(default_nickname), None);
+                println!("✓ [Flutter] Created new contact for {}", sender);
+            }
+        }
+        
+        // Initiate handshake to get their public key so we can reply
+        initiate_handshake(&sender);
+    }
     
     // Decrypt the message
     if let Ok(crypto_guard) = CRYPTO.lock() {
@@ -440,6 +535,7 @@ pub fn get_contacts() -> anyhow::Result<Vec<ContactInfo>> {
         onion_address: WEB_CONTACT_ADDRESS.to_string(),
         nickname: WEB_CONTACT_NAME.to_string(),
         last_seen: Some(chrono::Utc::now().timestamp()),
+        public_key: None,
     });
     
     if let Some(storage) = storage_guard.as_ref() {
@@ -449,6 +545,7 @@ pub fn get_contacts() -> anyhow::Result<Vec<ContactInfo>> {
                 onion_address: c.onion_address,
                 nickname: c.nickname.unwrap_or_else(|| "Unknown".to_string()),
                 last_seen: c.last_seen,
+                public_key: c.public_key,
             });
         }
     }
@@ -459,6 +556,106 @@ pub fn add_contact(onion_address: String, nickname: String) -> anyhow::Result<bo
     let storage_guard = STORAGE.lock().unwrap();
     if let Some(storage) = storage_guard.as_ref() {
         storage.add_contact(&onion_address, Some(&nickname), None)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        
+        // Send handshake to the new contact
+        drop(storage_guard);  // Release lock before sending
+        let address_clone = onion_address.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = send_handshake_to_contact(address_clone) {
+                println!("⚠ [Flutter] Failed to send handshake: {}", e);
+            }
+        });
+        
+        Ok(true)
+    } else {
+        Err(anyhow::anyhow!("Storage not initialized"))
+    }
+}
+
+/// Send a handshake message to a contact to exchange keys
+pub fn send_handshake_to_contact(onion_address: String) -> anyhow::Result<bool> {
+    println!("→ [Flutter] Sending handshake to: {}", onion_address);
+    
+    // Get our public key
+    let crypto_guard = CRYPTO.lock().unwrap();
+    let our_pk = match crypto_guard.as_ref() {
+        Some(crypto) => crypto.get_public_key_pem()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?,
+        None => return Err(anyhow::anyhow!("Crypto not initialized")),
+    };
+    drop(crypto_guard);
+    
+    // Get our onion address
+    let our_onion = get_onion_address();
+    if our_onion.is_empty() {
+        return Err(anyhow::anyhow!("Tor not started"));
+    }
+    
+    // Create handshake message (is_response = false since we're initiating)
+    let handshake = MessageProtocol::create_handshake_message(&our_onion, &our_pk, false);
+    let json = handshake.to_json().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    
+    // Send via Tor
+    let service_guard = TOR_SERVICE.lock().unwrap();
+    if let Some(service) = service_guard.as_ref() {
+        match service.send_message(&onion_address, &json) {
+            Ok(_) => {
+                println!("✓ [Flutter] Handshake sent to {}", onion_address);
+                Ok(true)
+            }
+            Err(e) => {
+                println!("✗ [Flutter] Failed to send handshake: {}", e);
+                Err(anyhow::anyhow!(e.to_string()))
+            }
+        }
+    } else {
+        Err(anyhow::anyhow!("Tor service not started"))
+    }
+}
+
+/// Get detailed contact information for the contact info dialog
+pub fn get_contact_details(onion_address: String) -> anyhow::Result<ContactDetails> {
+    let storage_guard = STORAGE.lock().unwrap();
+    if let Some(storage) = storage_guard.as_ref() {
+        // Get contact info
+        let contact = storage.get_contact(&onion_address)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?
+            .ok_or_else(|| anyhow::anyhow!("Contact not found"))?;
+        
+        // Get message statistics
+        let messages = storage.get_messages(Some(&onion_address), 1000)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        
+        let total_messages = messages.len() as i32;
+        let first_message_time = messages.last().map(|m| m.timestamp);
+        let last_message_time = messages.first().map(|m| m.timestamp);
+        
+        Ok(ContactDetails {
+            onion_address: contact.onion_address,
+            nickname: contact.nickname.unwrap_or_else(|| "Unknown".to_string()),
+            public_key: contact.public_key,
+            last_seen: contact.last_seen,
+            first_message_time,
+            last_message_time,
+            total_messages,
+        })
+    } else {
+        Err(anyhow::anyhow!("Storage not initialized"))
+    }
+}
+
+/// Update a contact's nickname
+pub fn update_contact_nickname(onion_address: String, nickname: String) -> anyhow::Result<bool> {
+    let storage_guard = STORAGE.lock().unwrap();
+    if let Some(storage) = storage_guard.as_ref() {
+        // Get existing contact to preserve public key
+        let existing = storage.get_contact(&onion_address)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?
+            .ok_or_else(|| anyhow::anyhow!("Contact not found"))?;
+        
+        // Update with new nickname, preserving public key
+        storage.add_contact(&onion_address, Some(&nickname), existing.public_key.as_deref())
             .map_err(|e| anyhow::anyhow!(e.to_string()))
     } else {
         Err(anyhow::anyhow!("Storage not initialized"))

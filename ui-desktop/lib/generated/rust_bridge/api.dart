@@ -6,8 +6,8 @@
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `get_web_messages_from_storage`, `handle_handshake_message`, `handle_incoming_message`, `handle_raw_message`, `handle_text_message`, `handle_web_message`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`
+// These functions are ignored because they are not marked as `pub`: `get_web_messages_from_storage`, `handle_handshake_message`, `handle_incoming_message`, `handle_text_message`, `handle_web_message`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`
 
 Future<String> startTor() => RustLib.instance.api.crateApiStartTor();
 
@@ -15,6 +15,10 @@ Future<String> getOnionAddress() =>
     RustLib.instance.api.crateApiGetOnionAddress();
 
 Future<void> stopTor() => RustLib.instance.api.crateApiStopTor();
+
+/// Get my own public key
+Future<String> getMyPublicKey() =>
+    RustLib.instance.api.crateApiGetMyPublicKey();
 
 /// Get count of new messages since last check (for polling)
 Future<int> getNewMessageCount() =>
@@ -35,6 +39,25 @@ Future<bool> addContact({
   required String onionAddress,
   required String nickname,
 }) => RustLib.instance.api.crateApiAddContact(
+  onionAddress: onionAddress,
+  nickname: nickname,
+);
+
+/// Send a handshake message to a contact to exchange keys
+Future<bool> sendHandshakeToContact({required String onionAddress}) => RustLib
+    .instance
+    .api
+    .crateApiSendHandshakeToContact(onionAddress: onionAddress);
+
+/// Get detailed contact information for the contact info dialog
+Future<ContactDetails> getContactDetails({required String onionAddress}) =>
+    RustLib.instance.api.crateApiGetContactDetails(onionAddress: onionAddress);
+
+/// Update a contact's nickname
+Future<bool> updateContactNickname({
+  required String onionAddress,
+  required String nickname,
+}) => RustLib.instance.api.crateApiUpdateContactNickname(
   onionAddress: onionAddress,
   nickname: nickname,
 );
@@ -62,20 +85,69 @@ Future<bool> deleteChat({required String onionAddress}) =>
 Future<int> clearChat({required String onionAddress}) =>
     RustLib.instance.api.crateApiClearChat(onionAddress: onionAddress);
 
+/// Detailed contact information for the contact info dialog
+class ContactDetails {
+  final String onionAddress;
+  final String nickname;
+  final String? publicKey;
+  final PlatformInt64? lastSeen;
+  final PlatformInt64? firstMessageTime;
+  final PlatformInt64? lastMessageTime;
+  final int totalMessages;
+
+  const ContactDetails({
+    required this.onionAddress,
+    required this.nickname,
+    this.publicKey,
+    this.lastSeen,
+    this.firstMessageTime,
+    this.lastMessageTime,
+    required this.totalMessages,
+  });
+
+  @override
+  int get hashCode =>
+      onionAddress.hashCode ^
+      nickname.hashCode ^
+      publicKey.hashCode ^
+      lastSeen.hashCode ^
+      firstMessageTime.hashCode ^
+      lastMessageTime.hashCode ^
+      totalMessages.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ContactDetails &&
+          runtimeType == other.runtimeType &&
+          onionAddress == other.onionAddress &&
+          nickname == other.nickname &&
+          publicKey == other.publicKey &&
+          lastSeen == other.lastSeen &&
+          firstMessageTime == other.firstMessageTime &&
+          lastMessageTime == other.lastMessageTime &&
+          totalMessages == other.totalMessages;
+}
+
 class ContactInfo {
   final String onionAddress;
   final String nickname;
   final PlatformInt64? lastSeen;
+  final String? publicKey;
 
   const ContactInfo({
     required this.onionAddress,
     required this.nickname,
     this.lastSeen,
+    this.publicKey,
   });
 
   @override
   int get hashCode =>
-      onionAddress.hashCode ^ nickname.hashCode ^ lastSeen.hashCode;
+      onionAddress.hashCode ^
+      nickname.hashCode ^
+      lastSeen.hashCode ^
+      publicKey.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -84,7 +156,8 @@ class ContactInfo {
           runtimeType == other.runtimeType &&
           onionAddress == other.onionAddress &&
           nickname == other.nickname &&
-          lastSeen == other.lastSeen;
+          lastSeen == other.lastSeen &&
+          publicKey == other.publicKey;
 }
 
 class MessageInfo {

@@ -31,6 +31,43 @@ class _NewChatDialogState extends State<NewChatDialog> with SingleTickerProvider
     super.dispose();
   }
 
+  // Sanitize text to handle malformed UTF-16 characters
+  String _sanitizeText(String text) {
+    if (text.isEmpty) return text;
+    try {
+      final buffer = StringBuffer();
+      for (int i = 0; i < text.length; i++) {
+        final codeUnit = text.codeUnitAt(i);
+        // Basic Multilingual Plane (valid single code unit)
+        if (codeUnit >= 0x0000 && codeUnit <= 0xD7FF) {
+          buffer.writeCharCode(codeUnit);
+        } else if (codeUnit >= 0xE000 && codeUnit <= 0xFFFF) {
+          buffer.writeCharCode(codeUnit);
+        } else if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF && i + 1 < text.length) {
+          // High surrogate - check for valid low surrogate
+          final nextCodeUnit = text.codeUnitAt(i + 1);
+          if (nextCodeUnit >= 0xDC00 && nextCodeUnit <= 0xDFFF) {
+            buffer.writeCharCode(codeUnit);
+            buffer.writeCharCode(nextCodeUnit);
+            i++; // Skip next character (low surrogate)
+          }
+        }
+        // Skip invalid surrogates silently
+      }
+      return buffer.toString().isEmpty ? '?' : buffer.toString();
+    } catch (e) {
+      return text.replaceAll(RegExp(r'[^\x00-\x7F]'), '?');
+    }
+  }
+
+  String _safeSubstring(String text, int start, [int? end]) {
+    final sanitized = _sanitizeText(text);
+    if (sanitized.isEmpty) return '?';
+    final actualEnd = end != null ? (end > sanitized.length ? sanitized.length : end) : null;
+    final actualStart = start >= sanitized.length ? 0 : start;
+    return sanitized.substring(actualStart, actualEnd);
+  }
+
   Future<void> _addContact() async {
     if (_addressController.text.isEmpty) {
       setState(() => _error = 'Please enter an onion address');
@@ -49,8 +86,9 @@ class _NewChatDialogState extends State<NewChatDialog> with SingleTickerProvider
 
     try {
       final chatProvider = context.read<ChatProvider>();
+      // Use full address as nickname if empty to mark as "unsaved"
       final nickname = _nicknameController.text.isEmpty 
-          ? _addressController.text.substring(0, 8)
+          ? _addressController.text
           : _nicknameController.text;
       
       await chatProvider.addNewContact(_addressController.text, nickname);
@@ -140,7 +178,10 @@ class _NewChatDialogState extends State<NewChatDialog> with SingleTickerProvider
   Widget _buildContactsList() {
     return Consumer<ChatProvider>(
       builder: (context, chatProvider, child) {
-        if (chatProvider.contacts.isEmpty) {
+        // Filter: only show "saved" contacts (where nickname != onion address)
+        final contacts = chatProvider.contacts.where((c) => chatProvider.isSavedContact(c)).toList();
+
+        if (contacts.isEmpty) {
           return const Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -148,7 +189,7 @@ class _NewChatDialogState extends State<NewChatDialog> with SingleTickerProvider
                 Icon(Icons.people_outline, size: 48, color: AppTheme.textSecondary),
                 SizedBox(height: 16),
                 Text(
-                  'No contacts yet',
+                  'No saved contacts',
                   style: TextStyle(color: AppTheme.textSecondary),
                 ),
                 SizedBox(height: 8),
@@ -162,24 +203,52 @@ class _NewChatDialogState extends State<NewChatDialog> with SingleTickerProvider
         }
 
         return ListView.builder(
-          itemCount: chatProvider.contacts.length,
+          itemCount: contacts.length,
           itemBuilder: (context, index) {
-            final contact = chatProvider.contacts[index];
+            final contact = contacts[index];
             return ListTile(
               leading: CircleAvatar(
                 backgroundColor: AppTheme.primaryPurple,
                 child: Text(
-                  contact.nickname.substring(0, 1).toUpperCase(),
+                  _safeSubstring(contact.nickname, 0, 1).toUpperCase(),
                   style: const TextStyle(color: Colors.white),
                 ),
               ),
               title: Text(
-                contact.nickname,
+                _sanitizeText(contact.nickname),
                 style: const TextStyle(color: AppTheme.textPrimary),
               ),
               subtitle: Text(
-                '${contact.onionAddress.substring(0, 16)}...',
+                '${_safeSubstring(contact.onionAddress, 0, 16)}...',
                 style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline, size: 20, color: Colors.grey),
+                onPressed: () async {
+                  final confirm = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      backgroundColor: AppTheme.sidebarBackground,
+                      title: const Text('Remove Contact?'),
+                      content: Text('Remove ${contact.nickname} from your contacts? This will not delete chat history.'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('Cancel'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          style: TextButton.styleFrom(foregroundColor: Colors.red),
+                          child: const Text('Remove'),
+                        ),
+                      ],
+                    ),
+                  );
+                  
+                  if (confirm == true && context.mounted) {
+                     await chatProvider.removeContact(contact.onionAddress);
+                  }
+                },
               ),
               onTap: () {
                 chatProvider.selectContact(contact);

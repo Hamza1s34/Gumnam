@@ -8,8 +8,19 @@ import 'package:provider/provider.dart';
 import 'package:tor_messenger_ui/services/tor_service_provider.dart';
 import 'package:tor_messenger_ui/services/chat_provider.dart';
 
+import 'package:local_notifier/local_notifier.dart';
+import 'package:window_manager/window_manager.dart';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  await windowManager.ensureInitialized();
+  await localNotifier.setup(
+    appName: 'Tor Messenger',
+    // The parameter shortcutPolicy only works on Windows
+    shortcutPolicy: ShortcutPolicy.requireCreate,
+  );
+
   await RustLib.init();
   runApp(const TorMessengerApp());
 }

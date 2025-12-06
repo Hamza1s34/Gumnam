@@ -37,7 +37,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.11.1";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 565304925;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1187041609;
 
 // Section: executor
 
@@ -186,6 +186,41 @@ fn wire__crate__api__delete_contact_impl(
         },
     )
 }
+fn wire__crate__api__get_contact_details_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "get_contact_details",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_onion_address = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let output_ok = crate::api::get_contact_details(api_onion_address)?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__get_contacts_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -249,6 +284,40 @@ fn wire__crate__api__get_messages_impl(
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
                     (move || {
                         let output_ok = crate::api::get_messages(api_contact_onion, api_limit)?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__get_my_public_key_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "get_my_public_key",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let output_ok = crate::api::get_my_public_key()?;
                         Ok(output_ok)
                     })(),
                 )
@@ -418,6 +487,41 @@ fn wire__crate__api__init_app_impl(
         },
     )
 }
+fn wire__crate__api__send_handshake_to_contact_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "send_handshake_to_contact",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_onion_address = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let output_ok = crate::api::send_handshake_to_contact(api_onion_address)?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__send_message_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -522,6 +626,43 @@ fn wire__crate__api__stop_tor_impl(
         },
     )
 }
+fn wire__crate__api__update_contact_nickname_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "update_contact_nickname",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_onion_address = <String>::sse_decode(&mut deserializer);
+            let api_nickname = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let output_ok =
+                            crate::api::update_contact_nickname(api_onion_address, api_nickname)?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
 
 // Section: dart2rust
 
@@ -548,16 +689,40 @@ impl SseDecode for bool {
     }
 }
 
+impl SseDecode for crate::api::ContactDetails {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_onionAddress = <String>::sse_decode(deserializer);
+        let mut var_nickname = <String>::sse_decode(deserializer);
+        let mut var_publicKey = <Option<String>>::sse_decode(deserializer);
+        let mut var_lastSeen = <Option<i64>>::sse_decode(deserializer);
+        let mut var_firstMessageTime = <Option<i64>>::sse_decode(deserializer);
+        let mut var_lastMessageTime = <Option<i64>>::sse_decode(deserializer);
+        let mut var_totalMessages = <i32>::sse_decode(deserializer);
+        return crate::api::ContactDetails {
+            onion_address: var_onionAddress,
+            nickname: var_nickname,
+            public_key: var_publicKey,
+            last_seen: var_lastSeen,
+            first_message_time: var_firstMessageTime,
+            last_message_time: var_lastMessageTime,
+            total_messages: var_totalMessages,
+        };
+    }
+}
+
 impl SseDecode for crate::api::ContactInfo {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_onionAddress = <String>::sse_decode(deserializer);
         let mut var_nickname = <String>::sse_decode(deserializer);
         let mut var_lastSeen = <Option<i64>>::sse_decode(deserializer);
+        let mut var_publicKey = <Option<String>>::sse_decode(deserializer);
         return crate::api::ContactInfo {
             onion_address: var_onionAddress,
             nickname: var_nickname,
             last_seen: var_lastSeen,
+            public_key: var_publicKey,
         };
     }
 }
@@ -709,16 +874,20 @@ fn pde_ffi_dispatcher_primary_impl(
         2 => wire__crate__api__clear_chat_impl(port, ptr, rust_vec_len, data_len),
         3 => wire__crate__api__delete_chat_impl(port, ptr, rust_vec_len, data_len),
         4 => wire__crate__api__delete_contact_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__get_contacts_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__get_messages_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__get_new_message_count_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__get_onion_address_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__get_pending_web_messages_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__get_web_message_count_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__init_app_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__send_message_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__start_tor_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__stop_tor_impl(port, ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__get_contact_details_impl(port, ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__get_contacts_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__get_messages_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__get_my_public_key_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__get_new_message_count_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__get_onion_address_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__get_pending_web_messages_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__get_web_message_count_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__init_app_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__send_handshake_to_contact_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__send_message_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__start_tor_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__stop_tor_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__update_contact_nickname_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -738,12 +907,34 @@ fn pde_ffi_dispatcher_sync_impl(
 // Section: rust2dart
 
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::ContactDetails {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.onion_address.into_into_dart().into_dart(),
+            self.nickname.into_into_dart().into_dart(),
+            self.public_key.into_into_dart().into_dart(),
+            self.last_seen.into_into_dart().into_dart(),
+            self.first_message_time.into_into_dart().into_dart(),
+            self.last_message_time.into_into_dart().into_dart(),
+            self.total_messages.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::ContactDetails {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::ContactDetails> for crate::api::ContactDetails {
+    fn into_into_dart(self) -> crate::api::ContactDetails {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::ContactInfo {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.onion_address.into_into_dart().into_dart(),
             self.nickname.into_into_dart().into_dart(),
             self.last_seen.into_into_dart().into_dart(),
+            self.public_key.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -815,12 +1006,26 @@ impl SseEncode for bool {
     }
 }
 
+impl SseEncode for crate::api::ContactDetails {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.onion_address, serializer);
+        <String>::sse_encode(self.nickname, serializer);
+        <Option<String>>::sse_encode(self.public_key, serializer);
+        <Option<i64>>::sse_encode(self.last_seen, serializer);
+        <Option<i64>>::sse_encode(self.first_message_time, serializer);
+        <Option<i64>>::sse_encode(self.last_message_time, serializer);
+        <i32>::sse_encode(self.total_messages, serializer);
+    }
+}
+
 impl SseEncode for crate::api::ContactInfo {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.onion_address, serializer);
         <String>::sse_encode(self.nickname, serializer);
         <Option<i64>>::sse_encode(self.last_seen, serializer);
+        <Option<String>>::sse_encode(self.public_key, serializer);
     }
 }
 

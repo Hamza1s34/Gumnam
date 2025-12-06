@@ -6,6 +6,7 @@ import 'package:tor_messenger_ui/services/tor_service_provider.dart';
 import 'package:tor_messenger_ui/services/chat_provider.dart';
 import 'package:tor_messenger_ui/theme/app_theme.dart';
 import 'package:tor_messenger_ui/widgets/dialogs/new_chat_dialog.dart';
+import 'package:tor_messenger_ui/widgets/dialogs/contact_info_dialog.dart';
 
 class Sidebar extends StatefulWidget {
   const Sidebar({super.key});
@@ -40,6 +41,40 @@ class _SidebarState extends State<Sidebar> {
     );
   }
 
+  // Sanitize text to handle malformed UTF-16 characters
+  String _sanitizeText(String text) {
+    if (text.isEmpty) return text;
+    try {
+      final buffer = StringBuffer();
+      for (int i = 0; i < text.length; i++) {
+        final codeUnit = text.codeUnitAt(i);
+        if (codeUnit >= 0x0000 && codeUnit <= 0xD7FF) {
+          buffer.writeCharCode(codeUnit);
+        } else if (codeUnit >= 0xE000 && codeUnit <= 0xFFFF) {
+          buffer.writeCharCode(codeUnit);
+        } else if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF && i + 1 < text.length) {
+          final nextCodeUnit = text.codeUnitAt(i + 1);
+          if (nextCodeUnit >= 0xDC00 && nextCodeUnit <= 0xDFFF) {
+            buffer.writeCharCode(codeUnit);
+            buffer.writeCharCode(nextCodeUnit);
+            i++;
+          }
+        }
+      }
+      return buffer.toString().isEmpty ? '?' : buffer.toString();
+    } catch (e) {
+      return text.replaceAll(RegExp(r'[^\x00-\x7F]'), '?');
+    }
+  }
+
+  String _safeSubstring(String text, int start, [int? end]) {
+    final sanitized = _sanitizeText(text);
+    if (sanitized.isEmpty) return '?';
+    final actualEnd = end != null ? (end > sanitized.length ? sanitized.length : end) : null;
+    final actualStart = start >= sanitized.length ? 0 : start;
+    return sanitized.substring(actualStart, actualEnd);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -52,9 +87,35 @@ class _SidebarState extends State<Sidebar> {
             color: AppTheme.sidebarBackground,
             child: Row(
               children: [
-                const CircleAvatar(
-                  backgroundColor: AppTheme.primaryPurple,
-                  child: Icon(Icons.person, color: Colors.white),
+                // Clickable profile avatar
+                GestureDetector(
+                  onTap: () => context.read<ChatProvider>().showMyProfile(),
+                  child: Consumer<TorServiceProvider>(
+                    builder: (context, tor, child) {
+                      return Stack(
+                        children: [
+                          const CircleAvatar(
+                            backgroundColor: AppTheme.primaryPurple,
+                            child: Icon(Icons.person, color: Colors.white),
+                          ),
+                          // Online status indicator
+                          Positioned(
+                            right: 0,
+                            bottom: 0,
+                            child: Container(
+                              width: 12,
+                              height: 12,
+                              decoration: BoxDecoration(
+                                color: tor.isReady ? Colors.green : Colors.orange,
+                                shape: BoxShape.circle,
+                                border: Border.all(color: AppTheme.sidebarBackground, width: 2),
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
                 ),
                 const Spacer(),
                 IconButton(
@@ -69,43 +130,6 @@ class _SidebarState extends State<Sidebar> {
                 ),
               ],
             ),
-          ),
-          // Status Bar
-          Consumer<TorServiceProvider>(
-            builder: (context, tor, child) {
-              return Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                color: AppTheme.sidebarBackground,
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.circle,
-                      size: 10,
-                      color: tor.isReady ? Colors.green : Colors.red,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: SelectableText(
-                        tor.isReady ? tor.onionAddress : tor.status,
-                        style: const TextStyle(fontSize: 10, color: Colors.grey),
-                      ),
-                    ),
-                    if (tor.isReady)
-                      IconButton(
-                        icon: const Icon(Icons.copy, size: 14),
-                        onPressed: () {
-                          Clipboard.setData(ClipboardData(text: tor.onionAddress));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Address copied!')),
-                          );
-                        },
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                      ),
-                  ],
-                ),
-              );
-            },
           ),
           // Search
           Padding(
@@ -149,12 +173,12 @@ class _SidebarState extends State<Sidebar> {
                       radius: 16,
                       backgroundColor: Colors.grey.shade700,
                       child: Text(
-                        contact.nickname.substring(0, 1).toUpperCase(),
+                        _safeSubstring(contact.nickname, 0, 1).toUpperCase(),
                         style: const TextStyle(color: Colors.white, fontSize: 12),
                       ),
                     ),
                     title: Text(
-                      contact.nickname,
+                      _sanitizeText(contact.nickname),
                       style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
                     ),
                     trailing: IconButton(
@@ -179,9 +203,26 @@ class _SidebarState extends State<Sidebar> {
                 }
 
                 final contacts = chatProvider.contacts.where((c) {
-                  if (_searchQuery.isEmpty) return true;
-                  return c.nickname.toLowerCase().contains(_searchQuery) ||
-                      c.onionAddress.toLowerCase().contains(_searchQuery);
+                  // Search query filter
+                  if (_searchQuery.isNotEmpty) {
+                    return c.nickname.toLowerCase().contains(_searchQuery) ||
+                        c.onionAddress.toLowerCase().contains(_searchQuery);
+                  }
+                  
+                  // Default view: Show only "active" chats
+                  // 1. Saved contacts WITH messages
+                  // 2. Any contact with unread messages
+                  // 3. The currently selected contact
+                  
+                  final hasHistory = chatProvider.hasMessages(c.onionAddress);
+                  final hasUnread = chatProvider.getUnreadCount(c.onionAddress) > 0;
+                  final isSelected = chatProvider.selectedContact?.onionAddress == c.onionAddress;
+                  final isWeb = c.onionAddress == 'web_messages_contact';
+                  
+                  // Always show web contact if it has messages
+                  if (isWeb) return chatProvider.webMessageCount > 0 || isSelected;
+
+                  return hasHistory || hasUnread || isSelected;
                 }).toList();
 
                 if (contacts.isEmpty) {
@@ -227,6 +268,8 @@ class _SidebarState extends State<Sidebar> {
                       isSelected: isSelected,
                       isWebContact: isWebContact,
                       webMessageCount: chatProvider.webMessageCount,
+                      unreadCount: chatProvider.getUnreadCount(contact.onionAddress),
+                      lastMessage: chatProvider.getLastMessageText(contact.onionAddress),
                       onTap: () => chatProvider.selectContact(contact),
                       onLongPress: () {
                         if (!isWebContact) {
@@ -272,6 +315,17 @@ class _SidebarState extends State<Sidebar> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
+              leading: const Icon(Icons.info_outline, color: AppTheme.primaryPurple),
+              title: const Text('Contact Info', style: TextStyle(color: AppTheme.primaryPurple)),
+              onTap: () {
+                Navigator.pop(context);
+                showDialog(
+                  context: context,
+                  builder: (context) => ContactInfoDialog(onionAddress: contact.onionAddress),
+                );
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.copy),
               title: const Text('Copy Address'),
               onTap: () {
@@ -313,12 +367,23 @@ class _SidebarState extends State<Sidebar> {
   }
 
   void _confirmDeleteChat(BuildContext context, contact) async {
+    final chatProvider = context.read<ChatProvider>();
+    final isSaved = chatProvider.isSavedContact(contact);
+    
+    // Always use "Delete Chat" terminology for this action
+    const title = 'Delete Chat?';
+    final content = isSaved
+        ? 'This will clear all messages with ${contact.nickname} and remove the chat from the sidebar. The contact will remain in your address book.'
+        : 'Are you sure you want to delete the chat with ${contact.nickname}? This will remove the contact and all messages.';
+    const actionText = 'Delete';
+    const actionColor = Colors.red;
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: AppTheme.sidebarBackground,
-        title: const Text('Delete Chat?'),
-        content: Text('Are you sure you want to delete the chat with ${contact.nickname}? This will remove the contact and all messages.'),
+        title: const Text(title),
+        content: Text(content),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -326,14 +391,24 @@ class _SidebarState extends State<Sidebar> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Delete'),
+            style: TextButton.styleFrom(foregroundColor: actionColor),
+            child: const Text(actionText),
           ),
         ],
       ),
     );
+
     if (confirm == true && context.mounted) {
-      context.read<ChatProvider>().deleteChatWithMessages(contact.onionAddress);
+      if (isSaved) {
+        // Clear messages (caches cleared in provider)
+        await chatProvider.clearChatMessages(contact.onionAddress);
+        // Deselect triggers "disappear" from sidebar since logic is (hasMessages || isSelected)
+        if (chatProvider.selectedContact?.onionAddress == contact.onionAddress) {
+          chatProvider.clearSelection();
+        }
+      } else {
+        await chatProvider.deleteChatWithMessages(contact.onionAddress);
+      }
     }
   }
 
@@ -394,6 +469,8 @@ class _ChatListTile extends StatefulWidget {
   final bool isSelected;
   final bool isWebContact;
   final int webMessageCount;
+  final int unreadCount;
+  final String lastMessage;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
   final VoidCallback? onDelete;
@@ -405,6 +482,8 @@ class _ChatListTile extends StatefulWidget {
     required this.isSelected,
     required this.isWebContact,
     required this.webMessageCount,
+    this.unreadCount = 0,
+    this.lastMessage = '',
     required this.onTap,
     required this.onLongPress,
     this.onDelete,
@@ -445,6 +524,19 @@ class _ChatListTileState extends State<_ChatListTile> {
     } catch (e) {
       return text.replaceAll(RegExp(r'[^\x00-\x7F]'), '?');
     }
+  }
+
+  String _safeFirstChar(String text) {
+    final sanitized = _sanitizeText(text);
+    if (sanitized.isEmpty) return '?';
+    return sanitized[0];
+  }
+
+  String _safeSubstring(String text, int start, int end) {
+    final sanitized = _sanitizeText(text);
+    if (sanitized.isEmpty) return '?';
+    final actualEnd = end > sanitized.length ? sanitized.length : end;
+    return sanitized.substring(start, actualEnd);
   }
 
   String _formatLastSeen(int timestamp) {
@@ -541,10 +633,11 @@ class _ChatListTileState extends State<_ChatListTile> {
               child: widget.isWebContact
                   ? const Icon(Icons.public, color: Colors.white)
                   : Text(
-                      widget.contact.nickname.substring(0, 1).toUpperCase(),
+                      _safeFirstChar(widget.contact.nickname).toUpperCase(),
                       style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                     ),
             ),
+            // Web message count badge
             if (widget.isWebContact && widget.webMessageCount > 0)
               Positioned(
                 right: 0,
@@ -565,10 +658,35 @@ class _ChatListTileState extends State<_ChatListTile> {
                   ),
                 ),
               ),
+            // Regular contact unread count badge
+            if (!widget.isWebContact && widget.unreadCount > 0)
+              Positioned(
+                right: 0,
+                top: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                  decoration: const BoxDecoration(
+                    color: AppTheme.primaryPurple,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Text(
+                    widget.unreadCount > 99 ? '99+' : '${widget.unreadCount}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
           ],
         ),
         title: Text(
-          _sanitizeText(widget.contact.nickname),
+          widget.contact.nickname == widget.contact.onionAddress
+              ? '${_safeSubstring(widget.contact.onionAddress, 0, 12)}...${_safeSubstring(widget.contact.onionAddress, 50, widget.contact.onionAddress.length)}'
+              : _sanitizeText(widget.contact.nickname),
           style: TextStyle(
             fontWeight: widget.isSelected ? FontWeight.bold : FontWeight.normal,
             color: AppTheme.textPrimary,
@@ -577,10 +695,18 @@ class _ChatListTileState extends State<_ChatListTile> {
         subtitle: Text(
           widget.isWebContact 
               ? 'Messages from web visitors'
-              : '${widget.contact.onionAddress.substring(0, widget.contact.onionAddress.length > 20 ? 20 : widget.contact.onionAddress.length)}...',
+              : (widget.lastMessage.isNotEmpty 
+                  ? _sanitizeText(widget.lastMessage)
+                  : (widget.contact.onionAddress.length > 20 
+                      ? '${_safeSubstring(widget.contact.onionAddress, 0, 20)}...'
+                      : widget.contact.onionAddress)),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+          style: TextStyle(
+            color: widget.unreadCount > 0 ? AppTheme.textPrimary : AppTheme.textSecondary,
+            fontWeight: widget.unreadCount > 0 ? FontWeight.bold : FontWeight.normal,
+            fontSize: 12,
+          ),
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:tor_messenger_ui/generated/rust_bridge/api.dart';
+import 'package:local_notifier/local_notifier.dart';
+import 'package:window_manager/window_manager.dart';
 
 class ChatProvider extends ChangeNotifier {
   List<ContactInfo> _contacts = [];
@@ -10,6 +12,11 @@ class ChatProvider extends ChangeNotifier {
   bool _isLoading = false;
   int _webMessageCount = 0;
   Timer? _pollTimer;
+  bool _showingContactInfo = false;
+  bool _showingMyProfile = false;
+  final Map<String, int> _unreadCounts = {};  // Track unread messages per contact
+  final Map<String, int> _lastMessageCounts = {};  // Track last known received message counts
+  final Map<String, String> _lastMessageTexts = {}; // Track last message text for preview
 
   List<ContactInfo> get contacts => _contacts;
   List<ContactInfo> get archivedContacts => _archivedContacts;
@@ -17,9 +24,37 @@ class ChatProvider extends ChangeNotifier {
   ContactInfo? get selectedContact => _selectedContact;
   bool get isLoading => _isLoading;
   int get webMessageCount => _webMessageCount;
+  bool get showingContactInfo => _showingContactInfo;
+  bool get showingMyProfile => _showingMyProfile;
+  
+  // Get unread count for a specific contact
+  int getUnreadCount(String onionAddress) => _unreadCounts[onionAddress] ?? 0;
+
+  // Get last message text for a specific contact
+  String getLastMessageText(String onionAddress) => _lastMessageTexts[onionAddress] ?? '';
   
   // Check if currently viewing web messages
   bool get isViewingWebMessages => _selectedContact?.onionAddress == 'web_messages_contact';
+
+  // Check if a contact is "saved" (has a nickname that is different from their onion address)
+  bool isSavedContact(ContactInfo contact) {
+    if (contact.onionAddress == 'web_messages_contact') return true;
+    final nick = contact.nickname.trim().toLowerCase();
+    final address = contact.onionAddress.trim().toLowerCase();
+    return nick != address && nick.isNotEmpty;
+  }
+
+  // Check if a contact has any message history
+  bool hasMessages(String onionAddress) {
+    // Check if we have tracked texts or just rely on the count from backend
+    // Since we don't always load texts, the LastMessageCounts is reliable for received
+    // For sent messages, we might need to rely on the loaded _messages list if selected,
+    // but globally we rely on the backend count if mapped.
+    // However, currently we only track _lastMessageCounts (received) and _lastMessageTexts (last preview).
+    // A robust way: if we have a last message text, we have messages.
+    return (_lastMessageTexts[onionAddress]?.isNotEmpty ?? false) || 
+           (_lastMessageCounts[onionAddress] ?? 0) > 0;
+  }
 
   void startPolling() {
     _pollTimer?.cancel();
@@ -42,6 +77,71 @@ class ChatProvider extends ChangeNotifier {
         notifyListeners();
       }
       
+      // Check if there are new incoming messages using the backend counter
+      // This detects messages from unknown senders who got auto-added as contacts
+      final newMessageCount = await getNewMessageCount();
+      if (newMessageCount > 0) {
+        debugPrint('[ChatProvider] Detected $newMessageCount new messages, reloading contacts');
+        // Reload contacts to pick up any new contacts auto-added by the backend
+        await loadContacts();
+      }
+      
+      // Check each contact for new messages
+      bool hasNewMessages = false;
+      bool shouldNotify = false;
+      String? notificationTitle;
+      String? notificationBody;
+
+      for (final contact in _contacts) {
+        if (contact.onionAddress == 'web_messages_contact') continue;
+        
+        try {
+          final messages = await getMessages(contactOnion: contact.onionAddress, limit: 100);
+          final currentCount = _unreadCounts[contact.onionAddress] ?? 0;
+          // Count received (not sent by us) messages
+          final receivedCount = messages.where((m) => !m.isSent).length;
+          // If there are more received messages than we've tracked, update
+          final lastKnownCount = _lastMessageCounts[contact.onionAddress] ?? 0;
+          
+          if (receivedCount > lastKnownCount) {
+            final newMessages = receivedCount - lastKnownCount;
+            _unreadCounts[contact.onionAddress] = currentCount + newMessages;
+            _lastMessageCounts[contact.onionAddress] = receivedCount;
+            hasNewMessages = true;
+            
+            // Determine if we should notify:
+            // 1. If this contact is NOT selected
+            // 2. OR if the window is not focused (even if selected)
+            final isSelected = _selectedContact?.onionAddress == contact.onionAddress;
+            final isFocused = await windowManager.isFocused();
+            
+            if (!isSelected || !isFocused) {
+               shouldNotify = true;
+               notificationTitle = 'New Message from ${contact.nickname.isEmpty ? "Unknown" : contact.nickname}';
+               notificationBody = messages.first.text; // messages is likely newest first due to API, check logic order
+               // Logic check: getMessages returns limit 100. Usually sorted by DB. 
+               // In loadMessages we reversed it. Here we take raw. Let's assume index 0 is newest.
+            }
+          }
+          
+          // Update last message text for preview (first message is newest)
+          if (messages.isNotEmpty) {
+             // Sanitize the text before storing
+             _lastMessageTexts[contact.onionAddress] = _sanitizeText(messages.first.text);
+          }
+        } catch (e) {
+          // Ignore errors for individual contacts
+        }
+      }
+      
+      if (hasNewMessages) {
+        notifyListeners();
+      }
+      
+      if (shouldNotify && notificationTitle != null) {
+        _showNotification(notificationTitle, notificationBody ?? 'You have a new message');
+      }
+      
       // If a contact is selected, reload messages to check for new ones
       if (_selectedContact != null) {
         await loadMessages(silent: true);
@@ -51,12 +151,35 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
+  void _showNotification(String title, String body) {
+    // Sanitize body for display
+    final cleanBody = _sanitizeText(body);
+    
+    final notification = LocalNotification(
+      title: title,
+      body: cleanBody,
+      silent: false, // This plays the default system sound
+    );
+    
+    notification.show();
+  }
+
   Future<void> loadContacts() async {
     _isLoading = true;
     notifyListeners();
     
     try {
       _contacts = await getContacts();
+      
+      // Refresh selectedContact with updated data (e.g., after nickname change)
+      if (_selectedContact != null) {
+        final updatedContact = _contacts.where(
+          (c) => c.onionAddress == _selectedContact!.onionAddress
+        ).firstOrNull;
+        if (updatedContact != null) {
+          _selectedContact = updatedContact;
+        }
+      }
     } catch (e) {
       debugPrint('Error loading contacts: $e');
     }
@@ -119,7 +242,12 @@ class ChatProvider extends ChangeNotifier {
       final deletedCount = await clearChat(onionAddress: onionAddress);
       debugPrint('Cleared $deletedCount messages for $onionAddress');
       
-      // Clear local messages
+      // Clear local message caches so the contact disappears from sidebar (if filtering by activity)
+      _lastMessageTexts.remove(onionAddress);
+      _lastMessageCounts.remove(onionAddress);
+      _unreadCounts.remove(onionAddress);
+
+      // Clear local messages if selected
       if (_selectedContact?.onionAddress == onionAddress) {
         _messages = [];
       }
@@ -174,19 +302,48 @@ class ChatProvider extends ChangeNotifier {
 
   void selectContact(ContactInfo contact) {
     _selectedContact = contact;
+    _showingContactInfo = false;  // Hide contact info when selecting a contact
+    _showingMyProfile = false;    // Hide my profile when selecting a contact
     
     // Clear web message count if selecting web messages
     if (contact.onionAddress == 'web_messages_contact') {
       _webMessageCount = 0;
     }
     
+    // Clear unread count for this contact
+    _unreadCounts[contact.onionAddress] = 0;
+    
     notifyListeners();
     loadMessages();
+  }
+
+  void showContactInfo() {
+    _showingContactInfo = true;
+    _showingMyProfile = false;
+    notifyListeners();
+  }
+
+  void hideContactInfo() {
+    _showingContactInfo = false;
+    notifyListeners();
+  }
+
+  void showMyProfile() {
+    _showingMyProfile = true;
+    _showingContactInfo = false;
+    notifyListeners();
+  }
+
+  void hideMyProfile() {
+    _showingMyProfile = false;
+    notifyListeners();
   }
 
   void clearSelection() {
     _selectedContact = null;
     _messages = [];
+    _showingContactInfo = false;
+    _showingMyProfile = false;
     notifyListeners();
   }
 
@@ -225,6 +382,22 @@ class ChatProvider extends ChangeNotifier {
       
       // Reverse to show oldest first
       final reversedMessages = newMessages.reversed.toList();
+      
+      // Update last message count for this contact (for unread tracking)
+      if (_selectedContact != null) {
+        final receivedCount = reversedMessages.where((m) => !m.isSent).length;
+        _lastMessageCounts[_selectedContact!.onionAddress] = receivedCount;
+        
+        // Update last message text for preview
+        if (newMessages.isNotEmpty) {
+           // newMessages is raw mapped (newest first? no wait.. code says reversedMessages is oldest first)
+           // Raw fetch from getMessages (limit 100) usually returns newest first or based on DB query
+           // looking at logic below: final reversedMessages = newMessages.reversed.toList();
+           // which implies newMessages is Newest->Oldest. 
+           // So first item of newMessages is the newest.
+           _lastMessageTexts[_selectedContact!.onionAddress] = newMessages.first.text; 
+        }
+      }
       
       // Only notify if messages changed to avoid unnecessary rebuilds
       if (_messages.length != reversedMessages.length || 
