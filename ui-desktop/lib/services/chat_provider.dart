@@ -1,8 +1,13 @@
+import 'dart:io';
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:tor_messenger_ui/generated/rust_bridge/api.dart';
+import 'package:tor_messenger_ui/generated/rust_bridge/api.dart' as api show deleteMessage;
 import 'package:local_notifier/local_notifier.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
 
 class ChatProvider extends ChangeNotifier {
   List<ContactInfo> _contacts = [];
@@ -12,11 +17,25 @@ class ChatProvider extends ChangeNotifier {
   bool _isLoading = false;
   int _webMessageCount = 0;
   Timer? _pollTimer;
+  Timer? _contactRefreshTimer;
   bool _showingContactInfo = false;
   bool _showingMyProfile = false;
   final Map<String, int> _unreadCounts = {};  // Track unread messages per contact
   final Map<String, int> _lastMessageCounts = {};  // Track last known received message counts
   final Map<String, String> _lastMessageTexts = {}; // Track last message text for preview
+  
+  // Track last known contact count to detect new contacts
+  int _lastKnownContactCount = 0;
+  
+  // Flag to prevent multiple simultaneous updates
+  bool _isUpdating = false;
+  
+  // Settings & Privacy State
+  List<String> _blockedContacts = [];
+  Map<String, int> _blockedSince = {}; // Track when a contact was blocked
+  List<String> _mutedContacts = [];
+  bool _notificationsEnabled = true;
+  bool _soundEnabled = true;
 
   List<ContactInfo> get contacts => _contacts;
   List<ContactInfo> get archivedContacts => _archivedContacts;
@@ -27,7 +46,225 @@ class ChatProvider extends ChangeNotifier {
   bool get showingContactInfo => _showingContactInfo;
   bool get showingMyProfile => _showingMyProfile;
   
-  // Get unread count for a specific contact
+  // Settings Getters
+  List<String> get blockedContacts => _blockedContacts;
+  List<String> get mutedContacts => _mutedContacts;
+  bool get notificationsEnabled => _notificationsEnabled;
+  bool get soundEnabled => _soundEnabled;
+
+  ChatProvider() {
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {    
+    final prefs = await SharedPreferences.getInstance();
+    _blockedContacts = prefs.getStringList('blocked_contacts') ?? [];
+    
+    final blockedSinceString = prefs.getString('blocked_since');
+    if (blockedSinceString != null) {
+      try {
+        final Map<String, dynamic> decoded = jsonDecode(blockedSinceString);
+        _blockedSince = decoded.map((k, v) => MapEntry(k, v as int));
+      } catch (e) {
+        _blockedSince = {};
+      }
+    }
+
+    _mutedContacts = prefs.getStringList('muted_contacts') ?? [];
+    _notificationsEnabled = prefs.getBool('notifications_enabled') ?? true;
+    _soundEnabled = prefs.getBool('sound_enabled') ?? true;
+    notifyListeners();
+  }
+  
+  Future<void> _saveSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('blocked_contacts', _blockedContacts);
+    await prefs.setString('blocked_since', jsonEncode(_blockedSince));
+    await prefs.setStringList('muted_contacts', _mutedContacts);
+    await prefs.setBool('notifications_enabled', _notificationsEnabled);
+    await prefs.setBool('sound_enabled', _soundEnabled);
+  }
+
+  // Settings Actions
+  Future<void> toggleNotifications(bool value) async {
+    _notificationsEnabled = value;
+    await _saveSettings();
+    notifyListeners();
+  }
+
+  Future<void> toggleSound(bool value) async {
+    _soundEnabled = value;
+    await _saveSettings();
+    notifyListeners();
+  }
+
+  Future<void> blockContact(String onionAddress) async {
+    if (!_blockedContacts.contains(onionAddress)) {
+      _blockedContacts.add(onionAddress);
+      // Record timestamp to hide messages received AFTER this point
+      _blockedSince[onionAddress] = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      await _saveSettings();
+      notifyListeners();
+    }
+  }
+
+  Future<void> unblockContact(String onionAddress) async {
+    if (_blockedContacts.contains(onionAddress)) {
+      _blockedContacts.remove(onionAddress);
+      _blockedSince.remove(onionAddress);
+      await _saveSettings();
+      notifyListeners();
+      // Reload messages to show previously hidden ones
+      if (_selectedContact?.onionAddress == onionAddress) {
+        await loadMessages();
+      }
+    }
+  }
+
+  bool isBlocked(String onionAddress) => _blockedContacts.contains(onionAddress);
+
+  Future<void> muteContact(String onionAddress) async {
+    if (!_mutedContacts.contains(onionAddress)) {
+      _mutedContacts.add(onionAddress);
+      await _saveSettings();
+      notifyListeners();
+    }
+  }
+
+  Future<void> unmuteContact(String onionAddress) async {
+    if (_mutedContacts.contains(onionAddress)) {
+      _mutedContacts.remove(onionAddress);
+      await _saveSettings();
+      notifyListeners();
+    }
+  }
+
+  bool isMuted(String onionAddress) => _mutedContacts.contains(onionAddress);
+  
+  // Storage & Export
+  Future<Map<String, int>> getStorageUsage() async {
+    try {
+      final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+      if (home == null) return {'total': 0, 'chat': 0, 'system': 0};
+      
+      final appDir = Directory('$home/.tor_messenger');
+      if (!await appDir.exists()) return {'total': 0, 'chat': 0, 'system': 0};
+
+      int chatSize = 0;
+      int systemSize = 0;
+      
+      // Calculate DB size (chat data)
+      final dbFile = File('${appDir.path}/messages.db');
+      if (await dbFile.exists()) {
+        chatSize += await dbFile.length();
+      }
+      
+      // Calculate System size (everything else)
+      await for (final entity in appDir.list(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          if (entity.path.endsWith('messages.db')) continue;
+          systemSize += await entity.length();
+        }
+      }
+      
+      return {
+        'total': chatSize + systemSize,
+        'chat': chatSize,
+        'system': systemSize,
+      };
+    } catch (e) {
+      debugPrint("Error calculating storage: $e");
+      return {'total': 0, 'chat': 0, 'system': 0};
+    }
+  }
+
+  Future<void> clearSystemCache() async {
+    try {
+      final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+      if (home == null) return;
+      
+      final torDataDir = Directory('$home/.tor_messenger/tor_data');
+      if (await torDataDir.exists()) {
+        // We delete contents but not the directory itself to be safe, 
+        // or just delete the hidden_service directory if we want to reset identity (NONO, we want cache).
+        // Actually, deleting 'tor_data' might reset identity if keys are in there.
+        // Rust config says keys are in ~/.tor_messenger/keys.
+        // tor_data contains 'hidden_service' (hostname/keys) and cached tor consensus.
+        // We should ONLY delete cached files, not the hidden_service directory!
+        
+        await for (final entity in torDataDir.list(followLinks: false)) {
+          // Preserve hidden_service directory to keep identity
+          if (entity.path.endsWith('hidden_service')) continue;
+          
+          try {
+             await entity.delete(recursive: true);
+          } catch (e) {
+            debugPrint('Could not delete ${entity.path}: $e');
+          }
+        }
+      }
+      notifyListeners();
+    } catch (e) {
+       debugPrint("Error clearing system cache: $e");
+       rethrow;
+    }
+  }
+
+  Future<void> exportChat(String onionAddress) async {
+    try {
+      final downloadDir = await getDownloadsDirectory();
+      if (downloadDir == null) return;
+      
+      final messages = await getMessages(contactOnion: onionAddress, limit: 10000);
+      final contact = _contacts.firstWhere((c) => c.onionAddress == onionAddress, orElse: () => ContactInfo(onionAddress: onionAddress, nickname: "Unknown"));
+      
+      final sb = StringBuffer();
+      sb.writeln("Chat Export with ${contact.nickname} ($onionAddress)");
+      sb.writeln("Exported on ${DateTime.now()}");
+      sb.writeln("-" * 50);
+      sb.writeln("");
+      
+      // Export oldest first
+      for (final msg in messages.reversed) {
+        final time = DateTime.fromMillisecondsSinceEpoch(msg.timestamp * 1000);
+        final sender = msg.isSent ? "Me" : contact.nickname;
+        sb.writeln("[$time] $sender: ${msg.text}");
+      }
+      
+      final file = File('${downloadDir.path}/chat_export_${contact.nickname.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}.txt');
+      await file.writeAsString(sb.toString());
+      
+      debugPrint("Chat exported to ${file.path}");
+    } catch (e) {
+      debugPrint("Error exporting chat: $e");
+      rethrow;
+    }
+  }
+  
+  // Bulk Actions
+  Future<void> clearAllChats() async {
+    for (final contact in _contacts) {
+      await clearChatMessages(contact.onionAddress);
+    }
+  }
+
+  Future<void> archiveAllChats() async {
+    final contactsToArchive = List<ContactInfo>.from(_contacts);
+    for (final contact in contactsToArchive) {
+      if (contact.onionAddress != 'web_messages_contact') {
+        await archiveChat(contact.onionAddress);
+      }
+    }
+  }
+
+  Future<void> deleteAllChats() async {
+    final contactsToDelete = List<ContactInfo>.from(_contacts);
+    for (final contact in contactsToDelete) {
+      if (contact.onionAddress != 'web_messages_contact') {
+        await deleteChatWithMessages(contact.onionAddress);
+      }
+    }
+  }
   int getUnreadCount(String onionAddress) => _unreadCounts[onionAddress] ?? 0;
 
   // Get last message text for a specific contact
@@ -46,130 +283,243 @@ class ChatProvider extends ChangeNotifier {
 
   // Check if a contact has any message history
   bool hasMessages(String onionAddress) {
-    // Check if we have tracked texts or just rely on the count from backend
-    // Since we don't always load texts, the LastMessageCounts is reliable for received
-    // For sent messages, we might need to rely on the loaded _messages list if selected,
-    // but globally we rely on the backend count if mapped.
-    // However, currently we only track _lastMessageCounts (received) and _lastMessageTexts (last preview).
-    // A robust way: if we have a last message text, we have messages.
     return (_lastMessageTexts[onionAddress]?.isNotEmpty ?? false) || 
            (_lastMessageCounts[onionAddress] ?? 0) > 0;
   }
 
   void startPolling() {
     _pollTimer?.cancel();
+    _contactRefreshTimer?.cancel();
+    
+    // Fast polling for messages AND new contacts (every 2 seconds)
     _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      _checkForNewMessages();
+      _checkAllChatsAndContacts();
     });
   }
 
   void stopPolling() {
     _pollTimer?.cancel();
     _pollTimer = null;
+    _contactRefreshTimer?.cancel();
+    _contactRefreshTimer = null;
   }
-
-  Future<void> _checkForNewMessages() async {
+  
+  // Combined check for new messages AND new contacts in one call
+  Future<void> _checkAllChatsAndContacts() async {
+    if (_isUpdating) return;
+    
     try {
-      // Check for pending web messages
-      final pendingCount = await getWebMessageCount();
-      if (pendingCount > 0) {
-        _webMessageCount = pendingCount;
-        notifyListeners();
-      }
+      _isUpdating = true;
       
-      // Check if there are new incoming messages using the backend counter
-      // This detects messages from unknown senders who got auto-added as contacts
-      final newMessageCount = await getNewMessageCount();
-      if (newMessageCount > 0) {
-        debugPrint('[ChatProvider] Detected $newMessageCount new messages, reloading contacts');
-        // Reload contacts to pick up any new contacts auto-added by the backend
-        await loadContacts();
-      }
-      
-      // Check each contact for new messages
-      bool hasNewMessages = false;
-      bool shouldNotify = false;
-      String? notificationTitle;
-      String? notificationBody;
-
-      for (final contact in _contacts) {
-        if (contact.onionAddress == 'web_messages_contact') continue;
-        
-        try {
-          final messages = await getMessages(contactOnion: contact.onionAddress, limit: 100);
-          final currentCount = _unreadCounts[contact.onionAddress] ?? 0;
-          // Count received (not sent by us) messages
-          final receivedCount = messages.where((m) => !m.isSent).length;
-          // If there are more received messages than we've tracked, update
-          final lastKnownCount = _lastMessageCounts[contact.onionAddress] ?? 0;
+      // FIRST: Check for new contacts (this is fast and critical for UX)
+      bool hasNewContacts = false;
+      try {
+        final rawContacts = await getContacts();
+        if (rawContacts.length != _lastKnownContactCount) {
+          _lastKnownContactCount = rawContacts.length;
           
-          if (receivedCount > lastKnownCount) {
-            final newMessages = receivedCount - lastKnownCount;
-            _unreadCounts[contact.onionAddress] = currentCount + newMessages;
-            _lastMessageCounts[contact.onionAddress] = receivedCount;
-            hasNewMessages = true;
-            
-            // Determine if we should notify:
-            // 1. If this contact is NOT selected
-            // 2. OR if the window is not focused (even if selected)
-            final isSelected = _selectedContact?.onionAddress == contact.onionAddress;
-            final isFocused = await windowManager.isFocused();
-            
-            if (!isSelected || !isFocused) {
-               shouldNotify = true;
-               notificationTitle = 'New Message from ${contact.nickname.isEmpty ? "Unknown" : contact.nickname}';
-               notificationBody = messages.first.text; // messages is likely newest first due to API, check logic order
-               // Logic check: getMessages returns limit 100. Usually sorted by DB. 
-               // In loadMessages we reversed it. Here we take raw. Let's assume index 0 is newest.
+          final newContacts = rawContacts.map((c) => ContactInfo(
+            onionAddress: c.onionAddress,
+            nickname: _sanitizeText(c.nickname),
+            lastSeen: c.lastSeen,
+          )).toList();
+          
+          // Find new contacts
+          final existingAddresses = _contacts.map((c) => c.onionAddress).toSet();
+          String? newContactAddress;
+          
+          for (final contact in newContacts) {
+            if (!existingAddresses.contains(contact.onionAddress)) {
+              hasNewContacts = true;
+              newContactAddress = contact.onionAddress;
+              debugPrint('[ChatProvider] New contact detected: ${contact.onionAddress}');
             }
           }
           
-          // Update last message text for preview (first message is newest)
+          if (hasNewContacts) {
+            _contacts = newContacts;
+            // Immediately notify to show new contact in UI
+            notifyListeners();
+            
+            // Load preview for new contact
+            if (newContactAddress != null) {
+              await _loadPreviewForContact(newContactAddress);
+              
+              // Show notification
+              if (_notificationsEnabled) {
+                final preview = _lastMessageTexts[newContactAddress] ?? 'New message';
+                _showNotification('New message', preview);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('[ChatProvider] Error checking contacts: $e');
+      }
+      
+      // Check web messages
+      try {
+        final pendingCount = await getWebMessageCount();
+        if (pendingCount != _webMessageCount) {
+          _webMessageCount = pendingCount;
+          notifyListeners();
+        }
+      } catch (_) {}
+      
+      bool hasAnyNewMessages = false;
+      
+      // Check each contact for new messages
+      for (final contact in _contacts) {
+        if (contact.onionAddress == 'web_messages_contact') continue;
+        if (_blockedContacts.contains(contact.onionAddress)) continue;
+        
+        try {
+          final messages = await getMessages(contactOnion: contact.onionAddress, limit: 10);
+          if (messages.isEmpty) continue;
+          
+          // Get last known count for this contact
+          final lastKnownCount = _lastMessageCounts[contact.onionAddress] ?? 0;
+          final receivedMessages = messages.where((m) => !m.isSent).toList();
+          final currentReceivedCount = receivedMessages.length;
+          
+          // Check if there are new received messages
+          if (currentReceivedCount > lastKnownCount) {
+            final newMessageCount = currentReceivedCount - lastKnownCount;
+            
+            // Update unread count (add new messages to existing unread)
+            final currentUnread = _unreadCounts[contact.onionAddress] ?? 0;
+            _unreadCounts[contact.onionAddress] = currentUnread + newMessageCount;
+            
+            // Update last known count
+            _lastMessageCounts[contact.onionAddress] = currentReceivedCount;
+            
+            hasAnyNewMessages = true;
+            
+            // Show notification if:
+            // 1. This contact is NOT currently selected, OR
+            // 2. The app window is not focused
+            final isSelected = _selectedContact?.onionAddress == contact.onionAddress;
+            final isFocused = await windowManager.isFocused();
+            final isMuted = _mutedContacts.contains(contact.onionAddress);
+            
+            if ((!isSelected || !isFocused) && _notificationsEnabled && !isMuted) {
+              final lastMsg = receivedMessages.first;
+              String previewText;
+              
+              if (lastMsg.msgType == 'audio') {
+                previewText = '🎤 Audio Message';
+              } else if (lastMsg.msgType == 'image') {
+                previewText = '📷 Image';
+              } else if (lastMsg.msgType == 'file') {
+                previewText = '📁 File';
+              } else {
+                previewText = _sanitizeText(lastMsg.text);
+              }
+              
+              final nickname = contact.nickname.isNotEmpty ? contact.nickname : 'Unknown';
+              _showNotification('New message from $nickname', previewText);
+            }
+          }
+          
+          // Update last message text for preview (regardless of new messages)
           if (messages.isNotEmpty) {
-             // Sanitize the text before storing
-             _lastMessageTexts[contact.onionAddress] = _sanitizeText(messages.first.text);
+            final lastMsg = messages.first;
+            String previewText;
+            
+            if (lastMsg.msgType == 'audio') {
+              previewText = '🎤 Audio Message';
+            } else if (lastMsg.msgType == 'image') {
+              previewText = '📷 Image';
+            } else if (lastMsg.msgType == 'file') {
+              previewText = '📁 File';
+            } else {
+              previewText = _sanitizeText(lastMsg.text);
+            }
+            
+            _lastMessageTexts[contact.onionAddress] = previewText;
           }
         } catch (e) {
           // Ignore errors for individual contacts
         }
       }
       
-      if (hasNewMessages) {
-        notifyListeners();
-      }
-      
-      if (shouldNotify && notificationTitle != null) {
-        _showNotification(notificationTitle, notificationBody ?? 'You have a new message');
-      }
-      
-      // If a contact is selected, reload messages to check for new ones
-      if (_selectedContact != null) {
+      // Also update selected chat messages if any
+      if (_selectedContact != null && 
+          _selectedContact!.onionAddress != 'web_messages_contact' &&
+          !_blockedContacts.contains(_selectedContact!.onionAddress)) {
         await loadMessages(silent: true);
       }
+      
+      if (hasAnyNewMessages) {
+        notifyListeners();
+      }
     } catch (e) {
-      // Silently fail for polling errors to avoid log spam
+      debugPrint('Error checking for new messages: $e');
+    } finally {
+      _isUpdating = false;
     }
+  }
+  
+  // Load message preview for a specific contact
+  Future<void> _loadPreviewForContact(String onionAddress) async {
+    try {
+      final messages = await getMessages(contactOnion: onionAddress, limit: 1);
+      if (messages.isNotEmpty) {
+        final lastMsg = messages.first;
+        String previewText;
+        
+        if (lastMsg.msgType == 'audio') {
+          previewText = '🎤 Audio Message';
+        } else if (lastMsg.msgType == 'image') {
+          previewText = '📷 Image';
+        } else if (lastMsg.msgType == 'file') {
+          previewText = '📁 File';
+        } else {
+          previewText = _sanitizeText(lastMsg.text);
+        }
+        
+        _lastMessageTexts[onionAddress] = previewText;
+        _lastMessageCounts[onionAddress] = 1;
+        _unreadCounts[onionAddress] = (_unreadCounts[onionAddress] ?? 0) + 1;
+      }
+    } catch (_) {}
   }
 
   void _showNotification(String title, String body) {
-    // Sanitize body for display
+    // Sanitize both title and body for display to prevent UTF-16 errors
+    final cleanTitle = _sanitizeText(title);
     final cleanBody = _sanitizeText(body);
     
     final notification = LocalNotification(
-      title: title,
+      title: cleanTitle,
       body: cleanBody,
-      silent: false, // This plays the default system sound
+      silent: !_soundEnabled, // Use global sound setting
     );
+    debugPrint('[ChatProvider] Showing notification (Silent: ${!_soundEnabled})');
     
     notification.show();
   }
 
   Future<void> loadContacts() async {
-    _isLoading = true;
-    notifyListeners();
+    // Only set loading to true if we don't have contacts yet to avoid flickering on refresh
+    final isInitialLoad = _contacts.isEmpty;
+    if (isInitialLoad) {
+       _isLoading = true;
+       notifyListeners();
+    }
     
     try {
-      _contacts = await getContacts();
+      final rawContacts = await getContacts();
+      
+      // Track contact count for new contact detection
+      _lastKnownContactCount = rawContacts.length;
+      
+      // Sanitize contact nicknames to prevent UTF-16 errors
+      _contacts = rawContacts.map((c) => ContactInfo(
+        onionAddress: c.onionAddress,
+        nickname: _sanitizeText(c.nickname),
+        lastSeen: c.lastSeen,
+      )).toList();
       
       // Refresh selectedContact with updated data (e.g., after nickname change)
       if (_selectedContact != null) {
@@ -180,11 +530,55 @@ class ChatProvider extends ChangeNotifier {
           _selectedContact = updatedContact;
         }
       }
+      
+      _isLoading = false;
+      notifyListeners();
+      
+      // Load message previews in background after contacts are shown (only on initial load)
+      if (isInitialLoad) {
+        _loadMessagePreviewsAsync();
+      }
     } catch (e) {
       debugPrint('Error loading contacts: $e');
+      _isLoading = false;
+      notifyListeners();
     }
-    
-    _isLoading = false;
+  }
+  
+  // Load message previews asynchronously in background
+  Future<void> _loadMessagePreviewsAsync() async {
+    for (final contact in _contacts) {
+      if (contact.onionAddress == 'web_messages_contact') continue;
+      if (_blockedContacts.contains(contact.onionAddress)) continue;
+      
+      try {
+        final messages = await getMessages(contactOnion: contact.onionAddress, limit: 1);
+        if (messages.isNotEmpty) {
+          final lastMsg = messages.first;
+          String previewText;
+          
+          if (lastMsg.msgType == 'audio') {
+            previewText = '🎤 Audio Message';
+          } else if (lastMsg.msgType == 'image') {
+            previewText = '📷 Image';
+          } else if (lastMsg.msgType == 'file') {
+            previewText = '📁 File';
+          } else {
+            previewText = _sanitizeText(lastMsg.text);
+          }
+          
+          _lastMessageTexts[contact.onionAddress] = previewText;
+          
+          // Initialize message counts
+          final receivedCount = messages.where((m) => !m.isSent).length;
+          if (!_lastMessageCounts.containsKey(contact.onionAddress)) {
+            _lastMessageCounts[contact.onionAddress] = receivedCount;
+          }
+        }
+      } catch (e) {
+        // Ignore errors for individual contacts
+      }
+    }
     notifyListeners();
   }
 
@@ -255,6 +649,23 @@ class ChatProvider extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       debugPrint('Error clearing chat: $e');
+      rethrow;
+    }
+  }
+
+  // Delete a single message by ID
+  Future<void> deleteMessage(String messageId) async {
+    try {
+      final result = await api.deleteMessage(messageId: messageId);
+      debugPrint('Delete message $messageId result: $result');
+      
+      if (result) {
+        // Remove from local messages list
+        _messages.removeWhere((m) => m.id == messageId);
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('Error deleting message: $e');
       rethrow;
     }
   }
@@ -352,10 +763,6 @@ class ChatProvider extends ChangeNotifier {
       return;
     }
     
-    if (!silent) {
-      debugPrint('[ChatProvider] loadMessages: Loading for ${_selectedContact!.onionAddress}');
-    }
-    
     try {
       final rawMessages = await getMessages(
         contactOnion: _selectedContact!.onionAddress,
@@ -366,9 +773,19 @@ class ChatProvider extends ChangeNotifier {
         debugPrint('[ChatProvider] loadMessages: Got ${rawMessages.length} messages');
       }
       
+      // Quick check: if message count is same and last message ID is same, skip update
+      if (silent && rawMessages.isNotEmpty && _messages.isNotEmpty) {
+        if (rawMessages.length == _messages.length && rawMessages.first.id == _messages.last.id) {
+          // No new messages, skip update
+          return;
+        }
+      }
+      
       // Sanitize message text to fix UTF-16 encoding issues
       final newMessages = rawMessages.map((msg) {
-        final sanitizedText = _sanitizeText(msg.text);
+        // Only sanitize text messages. Media messages contain base64 data which must be preserved exactly.
+        final isMedia = msg.msgType == 'image' || msg.msgType == 'audio' || msg.msgType == 'file';
+        final sanitizedText = isMedia ? msg.text : _sanitizeText(msg.text);
         return MessageInfo(
           id: msg.id,
           text: sanitizedText,
@@ -377,37 +794,50 @@ class ChatProvider extends ChangeNotifier {
           timestamp: msg.timestamp,
           isSent: msg.isSent,
           isRead: msg.isRead,
+          msgType: msg.msgType,
         );
+      }).where((msg) {
+        // If blocked, hide messages received AFTER the block time
+        if (_blockedContacts.contains(_selectedContact!.onionAddress)) {
+           final blockedTime = _blockedSince[_selectedContact!.onionAddress];
+           if (blockedTime != null && !msg.isSent && msg.timestamp > blockedTime) {
+             return false;
+           }
+        }
+        return true;
       }).toList();
       
       // Reverse to show oldest first
       final reversedMessages = newMessages.reversed.toList();
       
-      // Update last message count for this contact (for unread tracking)
-      if (_selectedContact != null) {
+      // Update last message text for preview
+      if (_selectedContact != null && newMessages.isNotEmpty) {
         final receivedCount = reversedMessages.where((m) => !m.isSent).length;
         _lastMessageCounts[_selectedContact!.onionAddress] = receivedCount;
         
-        // Update last message text for preview
-        if (newMessages.isNotEmpty) {
-           // newMessages is raw mapped (newest first? no wait.. code says reversedMessages is oldest first)
-           // Raw fetch from getMessages (limit 100) usually returns newest first or based on DB query
-           // looking at logic below: final reversedMessages = newMessages.reversed.toList();
-           // which implies newMessages is Newest->Oldest. 
-           // So first item of newMessages is the newest.
-           _lastMessageTexts[_selectedContact!.onionAddress] = newMessages.first.text; 
+        final lastMsg = newMessages.first;
+        String previewText;
+        
+        if (lastMsg.msgType == 'audio') {
+          previewText = '🎤 Audio Message';
+        } else if (lastMsg.msgType == 'image') {
+          previewText = '📷 Image';
+        } else if (lastMsg.msgType == 'file') {
+          previewText = '📁 File';
+        } else {
+          previewText = lastMsg.text;
         }
+        
+        _lastMessageTexts[_selectedContact!.onionAddress] = previewText;
       }
       
-      // Only notify if messages changed to avoid unnecessary rebuilds
-      if (_messages.length != reversedMessages.length || 
-          _messages.isNotEmpty && reversedMessages.isNotEmpty && _messages.last.id != reversedMessages.last.id) {
+      // Only notify if messages actually changed
+      final hasNewMessages = _messages.length != reversedMessages.length || 
+          (_messages.isNotEmpty && reversedMessages.isNotEmpty && _messages.last.id != reversedMessages.last.id);
+      
+      if (hasNewMessages) {
         _messages = reversedMessages;
         notifyListeners();
-      } else {
-        // If lengths are same, check if content changed (e.g. status update)
-        _messages = reversedMessages;
-        // Don't notify if nothing meaningful changed, but updating the list reference is good practice
       }
     } catch (e) {
       if (!silent) {
@@ -417,7 +847,9 @@ class ChatProvider extends ChangeNotifier {
   }
 
   // Sanitize text to handle malformed UTF-16 characters
+  // This is critical to prevent Flutter rendering crashes
   String _sanitizeText(String text) {
+    if (text.isEmpty) return text;
     try {
       // Replace URL-encoded plus signs with spaces
       String cleaned = text.replaceAll('+', ' ');
@@ -437,9 +869,12 @@ class ChatProvider extends ChangeNotifier {
             i++;
           }
         }
+        // Skip invalid surrogate pairs silently
       }
-      return buffer.toString();
+      final result = buffer.toString();
+      return result.isEmpty ? ' ' : result; // Return space instead of empty to avoid rendering issues
     } catch (e) {
+      // If all else fails, return ASCII-only version
       return text.replaceAll(RegExp(r'[^\x00-\x7F]'), '?');
     }
   }
@@ -468,6 +903,25 @@ class ChatProvider extends ChangeNotifier {
       await loadMessages();
     } catch (e) {
       debugPrint('[ChatProvider] Error sending message: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> sendFileMedia(File file, String type) async {
+    if (_selectedContact == null) return;
+    if (isViewingWebMessages) return;
+
+    debugPrint('[ChatProvider] Sending $type: ${file.path}');
+
+    try {
+      await sendFile(
+        onionAddress: _selectedContact!.onionAddress,
+        filePath: file.path,
+        fileType: type,
+      );
+      await loadMessages();
+    } catch (e) {
+      debugPrint('[ChatProvider] Error sending file: $e');
       rethrow;
     }
   }

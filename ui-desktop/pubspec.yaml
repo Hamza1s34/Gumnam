@@ -44,6 +44,11 @@ dependencies:
   emoji_picker_flutter: ^3.0.0
   local_notifier: ^0.1.6
   window_manager: ^0.4.3
+  shared_preferences: ^2.2.2
+  file_picker: ^10.3.0
+  record: ^6.1.0
+  audioplayers: ^6.0.0
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:

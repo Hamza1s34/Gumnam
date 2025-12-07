@@ -7,6 +7,7 @@ import 'package:tor_messenger_ui/services/chat_provider.dart';
 import 'package:tor_messenger_ui/theme/app_theme.dart';
 import 'package:tor_messenger_ui/widgets/dialogs/new_chat_dialog.dart';
 import 'package:tor_messenger_ui/widgets/dialogs/contact_info_dialog.dart';
+import 'package:tor_messenger_ui/screens/settings_screen.dart';
 
 class Sidebar extends StatefulWidget {
   const Sidebar({super.key});
@@ -22,9 +23,13 @@ class _SidebarState extends State<Sidebar> {
   @override
   void initState() {
     super.initState();
-    // Load contacts when widget initializes
+    // Contacts are already loaded in main.dart, no need to reload here
+    // Only reload if contacts list is empty (rare edge case)
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<ChatProvider>().loadContacts();
+      final chatProvider = context.read<ChatProvider>();
+      if (chatProvider.contacts.isEmpty && !chatProvider.isLoading) {
+        chatProvider.loadContacts();
+      }
     });
   }
 
@@ -43,7 +48,7 @@ class _SidebarState extends State<Sidebar> {
 
   // Sanitize text to handle malformed UTF-16 characters
   String _sanitizeText(String text) {
-    if (text.isEmpty) return text;
+    if (text.isEmpty) return ' '; // Return space to prevent empty string rendering issues
     try {
       final buffer = StringBuffer();
       for (int i = 0; i < text.length; i++) {
@@ -60,8 +65,10 @@ class _SidebarState extends State<Sidebar> {
             i++;
           }
         }
+        // Skip invalid surrogate pairs silently
       }
-      return buffer.toString().isEmpty ? '?' : buffer.toString();
+      final result = buffer.toString();
+      return result.isEmpty ? ' ' : result;
     } catch (e) {
       return text.replaceAll(RegExp(r'[^\x00-\x7F]'), '?');
     }
@@ -123,10 +130,15 @@ class _SidebarState extends State<Sidebar> {
                   onPressed: _showNewChatDialog,
                   tooltip: 'New Chat',
                 ),
-                IconButton(
+                  IconButton(
                   icon: const Icon(Icons.more_vert),
-                  onPressed: () {},
-                  tooltip: 'Menu',
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const SettingsScreen()),
+                    );
+                  },
+                  tooltip: 'Settings',
                 ),
               ],
             ),
@@ -208,6 +220,11 @@ class _SidebarState extends State<Sidebar> {
                     return c.nickname.toLowerCase().contains(_searchQuery) ||
                         c.onionAddress.toLowerCase().contains(_searchQuery);
                   }
+                  
+                  // Filter out blocked contacts by default unless searched (REMOVED: User wants them to stay)
+                  // if (chatProvider.isBlocked(c.onionAddress)) {
+                  //   return false;
+                  // }
                   
                   // Default view: Show only "active" chats
                   // 1. Saved contacts WITH messages
@@ -296,7 +313,7 @@ class _SidebarState extends State<Sidebar> {
     final diff = now.difference(date);
 
     if (diff.inDays == 0) {
-      return DateFormat('HH:mm').format(date);
+      return DateFormat('h:mm a').format(date);
     } else if (diff.inDays == 1) {
       return 'Yesterday';
     } else if (diff.inDays < 7) {
@@ -360,6 +377,62 @@ class _SidebarState extends State<Sidebar> {
                 _confirmDeleteChat(context, contact);
               },
             ),
+            const Divider(),
+             Consumer<ChatProvider>(
+              builder: (context, chatProvider, _) {
+                 final isBlocked = chatProvider.isBlocked(contact.onionAddress);
+                 final isMuted = chatProvider.isMuted(contact.onionAddress);
+                 return Column(
+                  children: [
+                    ListTile(
+                      leading: Icon(isMuted ? Icons.notifications_off : Icons.notifications_active, color: AppTheme.textSecondary),
+                      title: Text(isMuted ? 'Unmute' : 'Mute', style: const TextStyle(color: AppTheme.textPrimary)),
+                      onTap: () {
+                         if (isMuted) {
+                           chatProvider.unmuteContact(contact.onionAddress);
+                         } else {
+                           chatProvider.muteContact(contact.onionAddress);
+                         }
+                         Navigator.pop(context);
+                      },
+                    ),
+                    ListTile(
+                      leading: Icon(isBlocked ? Icons.check_circle : Icons.block, color: isBlocked ? Colors.green : Colors.redAccent),
+                      title: Text(isBlocked ? 'Unblock' : 'Block', style: TextStyle(color: isBlocked ? Colors.green : Colors.redAccent)),
+                      onTap: () {
+                         if (isBlocked) {
+                           chatProvider.unblockContact(contact.onionAddress);
+                         } else {
+                           chatProvider.blockContact(contact.onionAddress);
+                         }
+                         Navigator.pop(context);
+                      },
+                    ),
+                  ],
+                 );
+              },
+            ),
+             ListTile(
+              leading: const Icon(Icons.download, color: AppTheme.primaryPurple),
+              title: const Text('Export Chat', style: TextStyle(color: AppTheme.primaryPurple)),
+               onTap: () async {
+                Navigator.pop(context);
+                try {
+                  await context.read<ChatProvider>().exportChat(contact.onionAddress);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Chat exported to Downloads')),
+                    );
+                  }
+                } catch (e) {
+                   if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Export failed: $e')),
+                    );
+                  }
+                }
+              },
+            ),
           ],
         ),
       ),
@@ -369,12 +442,13 @@ class _SidebarState extends State<Sidebar> {
   void _confirmDeleteChat(BuildContext context, contact) async {
     final chatProvider = context.read<ChatProvider>();
     final isSaved = chatProvider.isSavedContact(contact);
+    final safeName = _sanitizeText(contact.nickname);
     
     // Always use "Delete Chat" terminology for this action
     const title = 'Delete Chat?';
     final content = isSaved
-        ? 'This will clear all messages with ${contact.nickname} and remove the chat from the sidebar. The contact will remain in your address book.'
-        : 'Are you sure you want to delete the chat with ${contact.nickname}? This will remove the contact and all messages.';
+        ? 'This will clear all messages with $safeName and remove the chat from the sidebar. The contact will remain in your address book.'
+        : 'Are you sure you want to delete the chat with $safeName? This will remove the contact and all messages.';
     const actionText = 'Delete';
     const actionColor = Colors.red;
 
@@ -413,12 +487,13 @@ class _SidebarState extends State<Sidebar> {
   }
 
   void _confirmClearChat(BuildContext context, contact) async {
+    final safeName = _sanitizeText(contact.nickname);
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: AppTheme.sidebarBackground,
         title: const Text('Clear Chat?'),
-        content: Text('Are you sure you want to clear all messages with ${contact.nickname}?'),
+        content: Text('Are you sure you want to clear all messages with $safeName?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -438,12 +513,13 @@ class _SidebarState extends State<Sidebar> {
   }
 
   void _confirmArchiveChat(BuildContext context, contact) async {
+    final safeName = _sanitizeText(contact.nickname);
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: AppTheme.sidebarBackground,
         title: const Text('Archive Chat?'),
-        content: Text('Are you sure you want to archive the chat with ${contact.nickname}?'),
+        content: Text('Are you sure you want to archive the chat with $safeName?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -498,8 +574,9 @@ class _ChatListTile extends StatefulWidget {
 class _ChatListTileState extends State<_ChatListTile> {
   bool _isHovering = false;
 
-  // Sanitize text to handle malformed UTF-16 characters
+  // Sanitize text to handle malformed UTF-16 characters - MUST be called on ALL text
   String _sanitizeText(String text) {
+    if (text.isEmpty) return ' '; // Return space to prevent empty string issues
     try {
       // Replace URL-encoded plus signs with spaces
       String cleaned = text.replaceAll('+', ' ');
@@ -519,8 +596,10 @@ class _ChatListTileState extends State<_ChatListTile> {
             i++;
           }
         }
+        // Skip invalid surrogate pairs silently
       }
-      return buffer.toString();
+      final result = buffer.toString();
+      return result.isEmpty ? ' ' : result;
     } catch (e) {
       return text.replaceAll(RegExp(r'[^\x00-\x7F]'), '?');
     }
@@ -535,8 +614,10 @@ class _ChatListTileState extends State<_ChatListTile> {
   String _safeSubstring(String text, int start, int end) {
     final sanitized = _sanitizeText(text);
     if (sanitized.isEmpty) return '?';
+    final actualStart = start >= sanitized.length ? 0 : start;
     final actualEnd = end > sanitized.length ? sanitized.length : end;
-    return sanitized.substring(start, actualEnd);
+    if (actualStart >= actualEnd) return '';
+    return sanitized.substring(actualStart, actualEnd);
   }
 
   String _formatLastSeen(int timestamp) {
@@ -545,7 +626,7 @@ class _ChatListTileState extends State<_ChatListTile> {
     final diff = now.difference(date);
 
     if (diff.inDays == 0) {
-      return DateFormat('HH:mm').format(date);
+      return DateFormat('h:mm a').format(date);
     } else if (diff.inDays == 1) {
       return 'Yesterday';
     } else if (diff.inDays < 7) {
@@ -565,6 +646,10 @@ class _ChatListTileState extends State<_ChatListTile> {
       ),
       Offset.zero & overlay.size,
     );
+
+    final chatProvider = context.read<ChatProvider>();
+    final isMuted = chatProvider.isMuted(widget.contact.onionAddress);
+    final isBlocked = chatProvider.isBlocked(widget.contact.onionAddress);
 
     showMenu<String>(
       context: context,
@@ -604,92 +689,176 @@ class _ChatListTileState extends State<_ChatListTile> {
               ],
             ),
           ),
+        const PopupMenuDivider(),
+        if (!widget.isWebContact) ...[
+          PopupMenuItem<String>(
+            value: 'mute',
+            child: Row(
+              children: [
+                Icon(isMuted ? Icons.notifications_off : Icons.notifications_active, color: AppTheme.textSecondary, size: 20),
+                SizedBox(width: 12),
+                Text(isMuted ? 'Unmute' : 'Mute', style: const TextStyle(color: AppTheme.textPrimary)),
+              ],
+            ),
+          ),
+          PopupMenuItem<String>(
+            value: 'block',
+            child: Row(
+              children: [
+                Icon(isBlocked ? Icons.check_circle : Icons.block, color: isBlocked ? Colors.green : Colors.redAccent, size: 20),
+                SizedBox(width: 12),
+                Text(isBlocked ? 'Unblock' : 'Block', style: TextStyle(color: isBlocked ? Colors.green : Colors.redAccent)),
+              ],
+            ),
+          ),
+          const PopupMenuItem<String>(
+            value: 'export',
+            child: Row(
+              children: [
+                Icon(Icons.download, color: AppTheme.primaryPurple, size: 20),
+                SizedBox(width: 12),
+                Text('Export Chat', style: TextStyle(color: AppTheme.primaryPurple)),
+              ],
+            ),
+          ),
+        ],
       ],
-    ).then((value) {
-      if (value == 'clear') {
-        widget.onClear?.call();
-      } else if (value == 'archive') {
-        widget.onArchive?.call();
-      } else if (value == 'delete') {
-        widget.onDelete?.call();
-      }
+    ).then((value) async {
+       if (value == null) return;
+       
+       switch (value) {
+         case 'clear':
+           widget.onClear?.call();
+           break;
+         case 'archive':
+           widget.onArchive?.call();
+           break;
+         case 'delete':
+           widget.onDelete?.call();
+           break;
+         case 'mute':
+           if (isMuted) {
+             await chatProvider.unmuteContact(widget.contact.onionAddress);
+           } else {
+             await chatProvider.muteContact(widget.contact.onionAddress);
+           }
+           break;
+         case 'block':
+           if (isBlocked) {
+             await chatProvider.unblockContact(widget.contact.onionAddress);
+           } else {
+             await chatProvider.blockContact(widget.contact.onionAddress);
+           }
+           break;
+         case 'export':
+           try {
+              await chatProvider.exportChat(widget.contact.onionAddress);
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Chat exported to Downloads')),
+                );
+              }
+            } catch (e) {
+               if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Export failed: $e')),
+                );
+              }
+            }
+            break;
+       }
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    final hasUnread = widget.unreadCount > 0 || (widget.isWebContact && widget.webMessageCount > 0);
+    
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovering = true),
       onExit: (_) => setState(() => _isHovering = false),
-      child: ListTile(
-        selected: widget.isSelected,
-        selectedTileColor: Colors.white.withOpacity(0.1),
-        leading: Stack(
-          children: [
-            CircleAvatar(
-              backgroundColor: widget.isWebContact 
-                  ? Colors.blue 
-                  : (widget.isSelected ? AppTheme.primaryPurple : Colors.grey.shade700),
-              child: widget.isWebContact
-                  ? const Icon(Icons.public, color: Colors.white)
-                  : Text(
-                      _safeFirstChar(widget.contact.nickname).toUpperCase(),
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                    ),
-            ),
-            // Web message count badge
-            if (widget.isWebContact && widget.webMessageCount > 0)
-              Positioned(
-                right: 0,
-                top: 0,
-                child: Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: const BoxDecoration(
-                    color: Colors.red,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Text(
-                    '${widget.webMessageCount}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-            // Regular contact unread count badge
-            if (!widget.isWebContact && widget.unreadCount > 0)
-              Positioned(
-                right: 0,
-                top: 0,
-                child: Container(
-                  padding: const EdgeInsets.all(4),
-                  constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
-                  decoration: const BoxDecoration(
+      child: Container(
+        // Add subtle highlight for unread chats
+        decoration: hasUnread && !widget.isSelected
+            ? BoxDecoration(
+                border: Border(
+                  left: BorderSide(
                     color: AppTheme.primaryPurple,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Text(
-                    widget.unreadCount > 99 ? '99+' : '${widget.unreadCount}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    textAlign: TextAlign.center,
+                    width: 3,
                   ),
                 ),
+                color: AppTheme.primaryPurple.withOpacity(0.1),
+              )
+            : null,
+        child: ListTile(
+          selected: widget.isSelected,
+          selectedTileColor: Colors.white.withOpacity(0.1),
+          leading: Stack(
+            children: [
+              CircleAvatar(
+                backgroundColor: widget.isWebContact 
+                    ? Colors.blue 
+                    : (widget.isSelected ? AppTheme.primaryPurple : (hasUnread ? AppTheme.primaryPurple : Colors.grey.shade700)),
+                child: widget.isWebContact
+                    ? const Icon(Icons.public, color: Colors.white)
+                    : Text(
+                        _safeFirstChar(widget.contact.nickname).toUpperCase(),
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      ),
               ),
-          ],
-        ),
+              // Web message count badge
+              if (widget.isWebContact && widget.webMessageCount > 0)
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Text(
+                      '${widget.webMessageCount}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              // Regular contact unread count badge
+              if (!widget.isWebContact && widget.unreadCount > 0)
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                    decoration: const BoxDecoration(
+                      color: AppTheme.primaryPurple,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Text(
+                      widget.unreadCount > 99 ? '99+' : '${widget.unreadCount}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+            ],
+          ),
         title: Text(
           widget.contact.nickname == widget.contact.onionAddress
               ? '${_safeSubstring(widget.contact.onionAddress, 0, 12)}...${_safeSubstring(widget.contact.onionAddress, 50, widget.contact.onionAddress.length)}'
               : _sanitizeText(widget.contact.nickname),
           style: TextStyle(
-            fontWeight: widget.isSelected ? FontWeight.bold : FontWeight.normal,
-            color: AppTheme.textPrimary,
+            fontWeight: (widget.isSelected || widget.unreadCount > 0) ? FontWeight.bold : FontWeight.normal,
+            color: widget.unreadCount > 0 ? Colors.white : AppTheme.textPrimary,
           ),
         ),
         subtitle: Text(
@@ -699,7 +868,7 @@ class _ChatListTileState extends State<_ChatListTile> {
                   ? _sanitizeText(widget.lastMessage)
                   : (widget.contact.onionAddress.length > 20 
                       ? '${_safeSubstring(widget.contact.onionAddress, 0, 20)}...'
-                      : widget.contact.onionAddress)),
+                      : _sanitizeText(widget.contact.onionAddress))),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
@@ -711,7 +880,24 @@ class _ChatListTileState extends State<_ChatListTile> {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (widget.contact.lastSeen != null && !_isHovering)
+            // Show unread count in trailing if there are unread messages
+            if (widget.unreadCount > 0 && !_isHovering)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppTheme.primaryPurple,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  widget.unreadCount > 99 ? '99+' : '${widget.unreadCount}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              )
+            else if (widget.contact.lastSeen != null && !_isHovering)
               Text(
                 _formatLastSeen(widget.contact.lastSeen!),
                 style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
@@ -729,6 +915,7 @@ class _ChatListTileState extends State<_ChatListTile> {
         onTap: widget.onTap,
         onLongPress: widget.onLongPress,
         hoverColor: Colors.white.withOpacity(0.05),
+        ),
       ),
     );
   }

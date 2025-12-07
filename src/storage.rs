@@ -223,6 +223,16 @@ impl MessageStorage {
         Ok(updated > 0)
     }
 
+    /// Delete a single message by ID
+    pub fn delete_message(&self, msg_id: &str) -> Result<bool, StorageError> {
+        let conn = self.connection()?;
+        let deleted = conn.execute(
+            "DELETE FROM messages WHERE id = ?1",
+            params![msg_id],
+        )?;
+        Ok(deleted > 0)
+    }
+
     /// Add or update a contact
     pub fn add_contact(
         &self,

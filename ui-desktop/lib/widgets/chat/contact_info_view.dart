@@ -49,7 +49,7 @@ class _ContactInfoViewState extends State<ContactInfoView> {
   String _formatDateTime(int? timestamp) {
     if (timestamp == null) return 'Never';
     final date = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
-    return DateFormat('MMM d, yyyy HH:mm').format(date);
+    return DateFormat('MMM d, yyyy h:mm a').format(date);
   }
 
   void _copyToClipboard(String text, String label) {

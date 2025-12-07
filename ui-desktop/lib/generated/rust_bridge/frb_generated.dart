@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => -1187041609;
+  int get rustContentHash => 1902089727;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -87,6 +87,8 @@ abstract class RustLibApi extends BaseApi {
   Future<bool> crateApiDeleteChat({required String onionAddress});
 
   Future<bool> crateApiDeleteContact({required String onionAddress});
+
+  Future<bool> crateApiDeleteMessage({required String messageId});
 
   Future<ContactDetails> crateApiGetContactDetails({
     required String onionAddress,
@@ -110,6 +112,12 @@ abstract class RustLibApi extends BaseApi {
   Future<int> crateApiGetWebMessageCount();
 
   Future<void> crateApiInitApp();
+
+  Future<bool> crateApiSendFile({
+    required String onionAddress,
+    required String filePath,
+    required String fileType,
+  });
 
   Future<bool> crateApiSendHandshakeToContact({required String onionAddress});
 
@@ -257,6 +265,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<bool> crateApiDeleteMessage({required String messageId}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(messageId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 5,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiDeleteMessageConstMeta,
+        argValues: [messageId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiDeleteMessageConstMeta =>
+      const TaskConstMeta(debugName: "delete_message", argNames: ["messageId"]);
+
+  @override
   Future<ContactDetails> crateApiGetContactDetails({
     required String onionAddress,
   }) {
@@ -268,7 +304,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 6,
             port: port_,
           );
         },
@@ -297,7 +333,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 7,
             port: port_,
           );
         },
@@ -329,7 +365,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 8,
             port: port_,
           );
         },
@@ -358,7 +394,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 9,
             port: port_,
           );
         },
@@ -385,7 +421,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 10,
             port: port_,
           );
         },
@@ -412,7 +448,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 11,
             port: port_,
           );
         },
@@ -439,7 +475,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 12,
             port: port_,
           );
         },
@@ -466,7 +502,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 13,
             port: port_,
           );
         },
@@ -493,7 +529,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 14,
             port: port_,
           );
         },
@@ -512,6 +548,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "init_app", argNames: []);
 
   @override
+  Future<bool> crateApiSendFile({
+    required String onionAddress,
+    required String filePath,
+    required String fileType,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(onionAddress, serializer);
+          sse_encode_String(filePath, serializer);
+          sse_encode_String(fileType, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 15,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSendFileConstMeta,
+        argValues: [onionAddress, filePath, fileType],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSendFileConstMeta => const TaskConstMeta(
+    debugName: "send_file",
+    argNames: ["onionAddress", "filePath", "fileType"],
+  );
+
+  @override
   Future<bool> crateApiSendHandshakeToContact({required String onionAddress}) {
     return handler.executeNormal(
       NormalTask(
@@ -521,7 +593,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 16,
             port: port_,
           );
         },
@@ -556,7 +628,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 17,
             port: port_,
           );
         },
@@ -585,7 +657,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 18,
             port: port_,
           );
         },
@@ -612,7 +684,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 19,
             port: port_,
           );
         },
@@ -644,7 +716,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 20,
             port: port_,
           );
         },
@@ -760,8 +832,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MessageInfo dco_decode_message_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return MessageInfo(
       id: dco_decode_String(arr[0]),
       text: dco_decode_String(arr[1]),
@@ -770,6 +842,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       timestamp: dco_decode_i_64(arr[4]),
       isSent: dco_decode_bool(arr[5]),
       isRead: dco_decode_bool(arr[6]),
+      msgType: dco_decode_opt_String(arr[7]),
     );
   }
 
@@ -801,13 +874,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   WebMessageInfo dco_decode_web_message_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return WebMessageInfo(
       id: dco_decode_String(arr[0]),
       sender: dco_decode_String(arr[1]),
       text: dco_decode_String(arr[2]),
       timestamp: dco_decode_i_64(arr[3]),
+      msgType: dco_decode_String(arr[4]),
     );
   }
 
@@ -940,6 +1014,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_timestamp = sse_decode_i_64(deserializer);
     var var_isSent = sse_decode_bool(deserializer);
     var var_isRead = sse_decode_bool(deserializer);
+    var var_msgType = sse_decode_opt_String(deserializer);
     return MessageInfo(
       id: var_id,
       text: var_text,
@@ -948,6 +1023,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       timestamp: var_timestamp,
       isSent: var_isSent,
       isRead: var_isRead,
+      msgType: var_msgType,
     );
   }
 
@@ -991,11 +1067,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_sender = sse_decode_String(deserializer);
     var var_text = sse_decode_String(deserializer);
     var var_timestamp = sse_decode_i_64(deserializer);
+    var var_msgType = sse_decode_String(deserializer);
     return WebMessageInfo(
       id: var_id,
       sender: var_sender,
       text: var_text,
       timestamp: var_timestamp,
+      msgType: var_msgType,
     );
   }
 
@@ -1121,6 +1199,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_64(self.timestamp, serializer);
     sse_encode_bool(self.isSent, serializer);
     sse_encode_bool(self.isRead, serializer);
+    sse_encode_opt_String(self.msgType, serializer);
   }
 
   @protected
@@ -1167,5 +1246,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.sender, serializer);
     sse_encode_String(self.text, serializer);
     sse_encode_i_64(self.timestamp, serializer);
+    sse_encode_String(self.msgType, serializer);
   }
 }

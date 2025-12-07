@@ -2,6 +2,9 @@ use flutter_rust_bridge::frb;
 use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
 use once_cell::sync::Lazy;
+use base64::prelude::*;
+use std::fs;
+use std::path::Path;
 use tor_messenger::tor_service::TorService;
 use tor_messenger::storage::MessageStorage;
 use tor_messenger::crypto::CryptoHandler;
@@ -53,14 +56,17 @@ pub struct MessageInfo {
     pub timestamp: i64,
     pub is_sent: bool,
     pub is_read: bool,
+    pub msg_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
+
 pub struct WebMessageInfo {
     pub id: String,
     pub sender: String,
     pub text: String,
     pub timestamp: i64,
+    pub msg_type: String, // Web messages are usually text but good to align
 }
 
 #[frb(init)]
@@ -191,6 +197,14 @@ fn handle_incoming_message(msg_str: &str) {
             }
             handle_text_message(&msg);
         }
+        MessageType::Image | MessageType::Audio | MessageType::File => {
+             // STRICT: Media messages MUST be encrypted
+            if msg.payload.get("encrypted").and_then(|v| v.as_bool()) != Some(true) {
+                println!("⚠ [Flutter] Rejected unencrypted media message from {:?}", msg.sender_id);
+                return;
+            }
+            handle_file_message(&msg);
+        }
         _ => {
             // Ignore other message types
         }
@@ -211,6 +225,7 @@ fn handle_web_message(msg_data: &serde_json::Value) {
         sender: sender.to_string(),
         text: text.to_string(),
         timestamp,
+        msg_type: "text".to_string(),
     };
     
     if let Ok(mut queue) = WEB_MESSAGES.lock() {
@@ -433,6 +448,81 @@ fn handle_text_message(msg: &ProtocolMessage) {
             }
         }
     }
+
+}
+
+/// Handle encrypted file/media messages
+fn handle_file_message(msg: &ProtocolMessage) {
+    let sender = msg.sender_id.as_ref().unwrap().clone();
+    
+    // Strict: Must have data field
+    let data = match msg.payload.get("data") {
+        Some(d) => d,
+        None => {
+            println!("⚠ [Flutter] Rejected encrypted media without data from {}", sender);
+            return;
+        }
+    };
+    
+    // Strict: Must be valid EncryptedData
+    let encrypted_data = match serde_json::from_value::<tor_messenger::crypto::EncryptedData>(data.clone()) {
+        Ok(ed) => ed,
+        Err(_) => {
+            println!("⚠ [Flutter] Rejected invalid encrypted media data from {}", sender);
+            return;
+        }
+    };
+    
+    // Decrypt
+    if let Ok(crypto_guard) = CRYPTO.lock() {
+        if let Some(ref crypto) = *crypto_guard {
+             match crypto.decrypt_message(&encrypted_data) {
+                Ok(decrypted_content) => {
+                    // Content is Base64 encoded file data (plus optional metadata if we were fancy, but here just raw base64?)
+                    // The `send_file` sends Base64 string as the encrypted payload.
+                    // So `decrypted_content` IS the Base64 string.
+                    
+                    let type_str = msg.msg_type.as_str();
+                    println!("← [Flutter] Received {} from {}", type_str, sender);
+                    
+                    // Save to storage
+                    if let Ok(storage_guard) = STORAGE.lock() {
+                        if let Some(storage) = storage_guard.as_ref() {
+                            // We save the BASE64 string as the "text" payload in DB for simplicity? 
+                            // Yes, or a separate field. `save_message` takes `payload` (JSON).
+                            // We can store it in "text" field or "content" field.
+                            // `MessageInfo` maps `payload["text"]` to `text`.
+                            // So if we want UI to see it, we should put it in "text" or update `get_messages` to look elsewhere.
+                            // Start with "text" containing the base64 data.
+                            // Ideally we prefix it or use metadata?
+                            // Let's use `payload = {"text": base64_data, "filename": ...}` if we had filename.
+                            // For now simple: text = base64.
+                            
+                            let payload = serde_json::json!({
+                                "text": &decrypted_content,
+                                "is_file": true // Marker
+                            });
+                            
+                            let _ = storage.save_message(
+                                &msg.id,
+                                type_str,
+                                msg.sender_id.as_deref(),
+                                msg.recipient_id.as_deref(),
+                                &payload,
+                                msg.timestamp,
+                                false,
+                            );
+                        }
+                    }
+                    
+                     if let Ok(mut count) = NEW_MESSAGE_COUNT.lock() {
+                        *count += 1;
+                    }
+                }
+                Err(e) => println!("✗ [Flutter] Media decryption error: {}", e),
+             }
+        }
+    }
 }
 
 /// Get count of new messages since last check (for polling)
@@ -521,6 +611,92 @@ pub fn send_message(onion_address: String, message: String) -> anyhow::Result<bo
         result.map_err(|e| anyhow::anyhow!(e.to_string()))
     } else {
         println!("[DEBUG] ERROR: Tor service not started!");
+        Err(anyhow::anyhow!("Tor service not started"))
+    }
+
+}
+
+pub fn send_file(onion_address: String, file_path: String, file_type: String) -> anyhow::Result<bool> {
+    println!("[DEBUG] send_file called: path={}, type={}", file_path, file_type);
+    
+    // Validate file
+    let path = Path::new(&file_path);
+    if !path.exists() {
+        return Err(anyhow::anyhow!("File not found"));
+    }
+    
+    let metadata = fs::metadata(path)?;
+    if metadata.len() > 5 * 1024 * 1024 { // 5MB limit
+         return Err(anyhow::anyhow!("File too large (max 5MB)"));
+    }
+
+    let file_content = fs::read(path)?;
+    let encoded = BASE64_STANDARD.encode(file_content);
+    
+    // Determine MessageType
+    let msg_type = match file_type.as_str() {
+        "image" => MessageType::Image,
+        "audio" => MessageType::Audio,
+         _ => MessageType::File,
+    };
+    
+    let service_guard = TOR_SERVICE.lock().unwrap();
+    if let Some(service) = service_guard.as_ref() {
+        let my_address = service.get_onion_address().unwrap_or_default();
+        
+        // Get recipient public key
+        let pm_guard = PEER_MANAGER.lock().unwrap();
+        let public_key = pm_guard.as_ref().and_then(|pm| pm.get_peer_public_key(&onion_address));
+        drop(pm_guard);
+        
+        let pk = public_key.ok_or_else(|| anyhow::anyhow!("No public key for recipient"))?;
+        
+        // Encrypt content (base64 string)
+        let crypto_guard = CRYPTO.lock().unwrap();
+        let crypto = crypto_guard.as_ref().ok_or_else(|| anyhow::anyhow!("Crypto not initialized"))?;
+        
+        let encrypted_data = crypto.encrypt_message(&encoded, &pk)
+            .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
+            
+        drop(crypto_guard);
+        
+        // Wrap and send
+        let mut payload = std::collections::HashMap::new();
+        payload.insert("encrypted".to_string(), serde_json::Value::Bool(true));
+        payload.insert("data".to_string(), serde_json::to_value(encrypted_data).unwrap());
+        
+        let msg = ProtocolMessage::new(
+            msg_type,
+            payload,
+            Some(my_address.clone()),
+            Some(onion_address.clone()),
+        );
+        
+        let msg_json = msg.to_json().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        
+        // Save to storage
+        let storage_guard = STORAGE.lock().unwrap();
+        if let Some(storage) = storage_guard.as_ref() {
+            let payload = serde_json::json!({
+                "text": encoded, // Store base64 content in text field for now
+                "is_file": true,
+                "local_path": file_path // Store local path so we don't need to re-download/decode our own send
+            });
+            let _ = storage.save_message(
+                &msg.id,
+                msg_type.as_str(),
+                Some(&my_address),
+                Some(&onion_address),
+                &payload,
+                msg.timestamp,
+                true,
+            );
+        }
+        drop(storage_guard);
+        
+        let result = service.send_message(&onion_address, &msg_json);
+        result.map_err(|e| anyhow::anyhow!(e.to_string()))
+    } else {
         Err(anyhow::anyhow!("Tor service not started"))
     }
 }
@@ -691,11 +867,15 @@ pub fn get_messages(contact_onion: Option<String>, limit: i32) -> anyhow::Result
             timestamp: m.timestamp,
             is_sent: m.is_sent,
             is_read: m.is_read,
+            msg_type: Some(m.msg_type),
         }).collect())
     } else {
         Ok(vec![])
     }
-}
+} 
+
+
+
 
 // Get web messages from storage
 fn get_web_messages_from_storage(storage: &MessageStorage, limit: usize) -> anyhow::Result<Vec<MessageInfo>> {
@@ -719,6 +899,7 @@ fn get_web_messages_from_storage(storage: &MessageStorage, limit: usize) -> anyh
             timestamp: m.timestamp,
             is_sent: false,
             is_read: m.is_read,
+            msg_type: Some("web_message".to_string()),
         }
     }).collect())
 }
@@ -751,6 +932,17 @@ pub fn delete_chat(onion_address: String) -> anyhow::Result<bool> {
     let storage_guard = STORAGE.lock().unwrap();
     if let Some(storage) = storage_guard.as_ref() {
         storage.delete_chat(&onion_address)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
+    } else {
+        Err(anyhow::anyhow!("Storage not initialized"))
+    }
+}
+
+// Delete a single message by ID
+pub fn delete_message(message_id: String) -> anyhow::Result<bool> {
+    let storage_guard = STORAGE.lock().unwrap();
+    if let Some(storage) = storage_guard.as_ref() {
+        storage.delete_message(&message_id)
             .map_err(|e| anyhow::anyhow!(e.to_string()))
     } else {
         Err(anyhow::anyhow!("Storage not initialized"))

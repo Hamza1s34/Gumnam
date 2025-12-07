@@ -17,6 +17,9 @@ pub enum MessageType {
     KeyExchange,
     Ping,
     Pong,
+    Image,
+    Audio,
+    File,
 }
 
 impl MessageType {
@@ -28,6 +31,9 @@ impl MessageType {
             MessageType::KeyExchange => "key_exchange",
             MessageType::Ping => "ping",
             MessageType::Pong => "pong",
+            MessageType::Image => "image",
+            MessageType::Audio => "audio",
+            MessageType::File => "file",
         }
     }
 }

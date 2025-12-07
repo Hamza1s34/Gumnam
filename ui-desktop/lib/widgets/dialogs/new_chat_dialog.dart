@@ -225,12 +225,13 @@ class _NewChatDialogState extends State<NewChatDialog> with SingleTickerProvider
               trailing: IconButton(
                 icon: const Icon(Icons.delete_outline, size: 20, color: Colors.grey),
                 onPressed: () async {
+                  final safeName = _sanitizeText(contact.nickname);
                   final confirm = await showDialog<bool>(
                     context: context,
                     builder: (context) => AlertDialog(
                       backgroundColor: AppTheme.sidebarBackground,
                       title: const Text('Remove Contact?'),
-                      content: Text('Remove ${contact.nickname} from your contacts? This will not delete chat history.'),
+                      content: Text('Remove $safeName from your contacts? This will not delete chat history.'),
                       actions: [
                         TextButton(
                           onPressed: () => Navigator.pop(context, false),

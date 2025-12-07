@@ -6,7 +6,7 @@
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `get_web_messages_from_storage`, `handle_handshake_message`, `handle_incoming_message`, `handle_text_message`, `handle_web_message`
+// These functions are ignored because they are not marked as `pub`: `get_web_messages_from_storage`, `handle_file_message`, `handle_handshake_message`, `handle_incoming_message`, `handle_text_message`, `handle_web_message`, `initiate_handshake`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`
 
 Future<String> startTor() => RustLib.instance.api.crateApiStartTor();
@@ -30,6 +30,16 @@ Future<bool> sendMessage({
 }) => RustLib.instance.api.crateApiSendMessage(
   onionAddress: onionAddress,
   message: message,
+);
+
+Future<bool> sendFile({
+  required String onionAddress,
+  required String filePath,
+  required String fileType,
+}) => RustLib.instance.api.crateApiSendFile(
+  onionAddress: onionAddress,
+  filePath: filePath,
+  fileType: fileType,
 );
 
 Future<List<ContactInfo>> getContacts() =>
@@ -81,6 +91,9 @@ Future<int> getWebMessageCount() =>
 
 Future<bool> deleteChat({required String onionAddress}) =>
     RustLib.instance.api.crateApiDeleteChat(onionAddress: onionAddress);
+
+Future<bool> deleteMessage({required String messageId}) =>
+    RustLib.instance.api.crateApiDeleteMessage(messageId: messageId);
 
 Future<int> clearChat({required String onionAddress}) =>
     RustLib.instance.api.crateApiClearChat(onionAddress: onionAddress);
@@ -168,6 +181,7 @@ class MessageInfo {
   final PlatformInt64 timestamp;
   final bool isSent;
   final bool isRead;
+  final String? msgType;
 
   const MessageInfo({
     required this.id,
@@ -177,6 +191,7 @@ class MessageInfo {
     required this.timestamp,
     required this.isSent,
     required this.isRead,
+    this.msgType,
   });
 
   @override
@@ -187,7 +202,8 @@ class MessageInfo {
       recipientId.hashCode ^
       timestamp.hashCode ^
       isSent.hashCode ^
-      isRead.hashCode;
+      isRead.hashCode ^
+      msgType.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -200,7 +216,8 @@ class MessageInfo {
           recipientId == other.recipientId &&
           timestamp == other.timestamp &&
           isSent == other.isSent &&
-          isRead == other.isRead;
+          isRead == other.isRead &&
+          msgType == other.msgType;
 }
 
 class WebMessageInfo {
@@ -208,17 +225,23 @@ class WebMessageInfo {
   final String sender;
   final String text;
   final PlatformInt64 timestamp;
+  final String msgType;
 
   const WebMessageInfo({
     required this.id,
     required this.sender,
     required this.text,
     required this.timestamp,
+    required this.msgType,
   });
 
   @override
   int get hashCode =>
-      id.hashCode ^ sender.hashCode ^ text.hashCode ^ timestamp.hashCode;
+      id.hashCode ^
+      sender.hashCode ^
+      text.hashCode ^
+      timestamp.hashCode ^
+      msgType.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -228,5 +251,6 @@ class WebMessageInfo {
           id == other.id &&
           sender == other.sender &&
           text == other.text &&
-          timestamp == other.timestamp;
+          timestamp == other.timestamp &&
+          msgType == other.msgType;
 }
