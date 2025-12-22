@@ -17,6 +17,8 @@ rsa = { version = "0.9", features = ["sha2"] }
 aes-gcm = "0.10"
 rand = "0.8"
 sha2 = "0.10"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+base32 = "0.4"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -33,6 +35,9 @@ urlencoding = "2.1"
 
 # Networking
 socks = "0.3"
+reqwest = { version = "0.11", features = ["json", "socks", "multipart"] }
+libp2p = { version = "0.53", features = ["tcp", "dns", "noise", "yamux", "kad", "identify", "ping", "macros", "tokio"] }
+futures = "0.3"
 
 # Logging
 log = "0.4"

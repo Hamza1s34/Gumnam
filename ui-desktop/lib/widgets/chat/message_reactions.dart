@@ -229,8 +229,8 @@ class FullEmojiPickerWidget extends StatelessWidget {
             searchViewConfig: const SearchViewConfig(
               backgroundColor: Color(0xFF1E1E1E),
               buttonIconColor: Colors.grey,
-              hintTextStyle: TextStyle(color: Colors.grey),
-              inputTextStyle: TextStyle(color: Colors.white),
+              hintTextStyle: TextStyle(color: Colors.grey, fontSize: 16),
+              inputTextStyle: TextStyle(color: Colors.white, fontSize: 16),
             ),
           ),
         ),

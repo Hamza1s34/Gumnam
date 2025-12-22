@@ -20,6 +20,7 @@ pub enum MessageType {
     Image,
     Audio,
     File,
+    Ipfs,
 }
 
 impl MessageType {
@@ -34,6 +35,7 @@ impl MessageType {
             MessageType::Image => "image",
             MessageType::Audio => "audio",
             MessageType::File => "file",
+            MessageType::Ipfs => "ipfs",
         }
     }
 }
@@ -48,6 +50,7 @@ pub struct Message {
     pub timestamp: i64,
     pub sender_id: Option<String>,
     pub recipient_id: Option<String>,
+    pub signature: Option<String>, // Base64 signature
     pub version: String,
 }
 
@@ -66,6 +69,7 @@ impl Message {
             timestamp: Utc::now().timestamp(),
             sender_id,
             recipient_id,
+            signature: None,
             version: "1.0".to_string(),
         }
     }
@@ -150,6 +154,61 @@ impl MessageProtocol {
             Some(sender_id.to_string()),
             None,
         )
+    }
+
+    /// Sign a message using the sender's private key
+    pub fn sign_message(
+        msg: &mut Message,
+        crypto: &crate::crypto::CryptoHandler,
+    ) -> anyhow::Result<()> {
+        // We sign a string representation of the essential fields
+        let data_to_sign = format!(
+            "{}:{}:{:?}:{}:{:?}:{:?}",
+            msg.id,
+            msg.msg_type.as_str(),
+            msg.payload,
+            msg.timestamp,
+            msg.sender_id,
+            msg.recipient_id
+        );
+
+        let signature = crypto.sign_with_onion_key(&data_to_sign)
+            .map_err(|e| anyhow::anyhow!("Signing failed: {}", e))?;
+        
+        msg.signature = Some(signature);
+        Ok(())
+    }
+
+    /// Verify a message signature using the sender's onion address
+    pub fn verify_message(
+        msg: &Message,
+        _unused_pk_pem: &str, // Signature is now checked against onion address directly
+        crypto: &crate::crypto::CryptoHandler,
+    ) -> bool {
+        let signature = match &msg.signature {
+            Some(s) => s,
+            None => return false,
+        };
+
+        let sender_onion = match &msg.sender_id {
+            Some(o) => o,
+            None => return false,
+        };
+
+        let data_to_verify = format!(
+            "{}:{}:{:?}:{}:{:?}:{:?}",
+            msg.id,
+            msg.msg_type.as_str(),
+            msg.payload,
+            msg.timestamp,
+            msg.sender_id,
+            msg.recipient_id
+        );
+
+        match crypto.verify_with_onion_address(&data_to_verify, signature, sender_onion) {
+            Ok(valid) => valid,
+            Err(_) => false,
+        }
     }
 
     /// Validate message structure

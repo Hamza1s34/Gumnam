@@ -334,6 +334,14 @@ impl MessageStorage {
         self.delete_messages_for_contact(onion_address)?;
         self.delete_contact(onion_address)
     }
+
+    /// Clear ALL data from the database (messages and contacts)
+    pub fn clear_all_data(&self) -> Result<(), StorageError> {
+        let conn = self.connection()?;
+        conn.execute("DELETE FROM messages", [])?;
+        conn.execute("DELETE FROM contacts", [])?;
+        Ok(())
+    }
 }
 
 impl Default for MessageStorage {

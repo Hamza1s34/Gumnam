@@ -10,12 +10,12 @@ use aes_gcm::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rand::RngCore;
 use rsa::{
-    pkcs1v15::SigningKey,
     pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding},
     sha2::Sha256,
-    signature::{RandomizedSigner, Verifier, SignatureEncoding},
+    signature::{SignatureEncoding},
     Oaep, RsaPrivateKey, RsaPublicKey,
 };
+use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use thiserror::Error;
@@ -48,6 +48,7 @@ pub struct EncryptedData {
 pub struct CryptoHandler {
     private_key: RsaPrivateKey,
     public_key: RsaPublicKey,
+    onion_signing_key: Option<SigningKey>,
 }
 
 impl CryptoHandler {
@@ -90,6 +91,7 @@ impl CryptoHandler {
         Ok(Self {
             private_key,
             public_key,
+            onion_signing_key: None,
         })
     }
 
@@ -108,7 +110,20 @@ impl CryptoHandler {
         Ok(Self {
             private_key,
             public_key,
+            onion_signing_key: None,
         })
+    }
+
+    /// Set the onion signing key (Ed25519) loaded from Tor
+    pub fn set_onion_signing_key(&mut self, key_bytes: &[u8]) -> Result<(), CryptoError> {
+        if key_bytes.len() != 64 {
+            return Err(CryptoError::Signature("Invalid Ed25519 secret key length".to_string()));
+        }
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&key_bytes[0..32]);
+        let signing_key = SigningKey::from_bytes(&bytes);
+        self.onion_signing_key = Some(signing_key);
+        Ok(())
     }
 
     /// Get public key in PEM format for sharing
@@ -194,39 +209,66 @@ impl CryptoHandler {
         String::from_utf8(decrypted).map_err(|e| CryptoError::Decryption(e.to_string()))
     }
 
-    /// Sign a message with private key (RSA-PSS with SHA-256)
-    pub fn sign_message(&self, message: &str) -> Result<String, CryptoError> {
-        let signing_key = SigningKey::<Sha256>::new(self.private_key.clone());
-        let mut rng = rand::thread_rng();
-        let signature = signing_key.sign_with_rng(&mut rng, message.as_bytes());
+    /// Sign a message using the Ed25519 key (Identity Linked to Onion)
+    pub fn sign_with_onion_key(&self, message: &str) -> Result<String, CryptoError> {
+        let key = self.onion_signing_key.as_ref()
+            .ok_or_else(|| CryptoError::Signature("Onion signing key not loaded".to_string()))?;
+        
+        let signature = key.sign(message.as_bytes());
         Ok(BASE64.encode(signature.to_bytes()))
     }
 
-    /// Verify message signature
-    pub fn verify_signature(
+    /// Verify signature using a .onion address (decoding it to Ed25519 public key)
+    pub fn verify_with_onion_address(
         &self,
         message: &str,
-        signature: &str,
-        sender_public_key_pem: &str,
+        signature_b64: &str,
+        onion_address: &str,
     ) -> Result<bool, CryptoError> {
-        use rsa::pkcs1v15::{Signature, VerifyingKey};
-
-        let sender_public_key = RsaPublicKey::from_public_key_pem(sender_public_key_pem)
+        let pub_key = Self::onion_to_pubkey(onion_address)
             .map_err(|e| CryptoError::Signature(e.to_string()))?;
-
-        let verifying_key = VerifyingKey::<Sha256>::new(sender_public_key);
-
-        let signature_bytes = BASE64
-            .decode(signature)
+        
+        let sig_bytes = BASE64.decode(signature_b64)
             .map_err(|e| CryptoError::Signature(e.to_string()))?;
-
-        let sig = Signature::try_from(signature_bytes.as_slice())
+        
+        let signature = Signature::from_slice(&sig_bytes)
             .map_err(|e| CryptoError::Signature(e.to_string()))?;
-
-        match verifying_key.verify(message.as_bytes(), &sig) {
+        
+        match pub_key.verify(message.as_bytes(), &signature) {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
         }
+    }
+
+    /// Convert a Tor v3 .onion address back into an Ed25519 public key
+    pub fn onion_to_pubkey(onion: &str) -> anyhow::Result<VerifyingKey> {
+        // Remove .onion suffix if present
+        let onion = onion.trim_end_matches(".onion").to_lowercase();
+        
+        // V3 onions are 56 chars (Base32)
+        if onion.len() != 56 {
+            return Err(anyhow::anyhow!("Invalid onion address length (must be v3)"));
+        }
+
+        // Decode Base32
+        let alphabet = base32::Alphabet::RFC4648 { padding: false };
+        let decoded = base32::decode(alphabet, &onion)
+            .ok_or_else(|| anyhow::anyhow!("Failed to decode base32 onion address"))?;
+
+        if decoded.len() != 35 {
+            return Err(anyhow::anyhow!("Invalid decoded onion length"));
+        }
+
+        // The first 32 bytes are the Ed25519 public key
+        let mut pk_bytes = [0u8; 32];
+        pk_bytes.copy_from_slice(&decoded[0..32]);
+        
+        // verify version (last byte should be 0x03)
+        if decoded[34] != 0x03 {
+            return Err(anyhow::anyhow!("Not a v3 onion address (invalid version byte)"));
+        }
+
+        VerifyingKey::from_bytes(&pk_bytes).map_err(|e| anyhow::anyhow!(e))
     }
 }
 

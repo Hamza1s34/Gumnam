@@ -8,10 +8,12 @@ use std::thread;
 use std::time::Duration;
 
 use crate::crypto::CryptoHandler;
-use crate::message::MessageProtocol;
+
 use crate::peer::PeerManager;
 use crate::storage::MessageStorage;
 use crate::tor_service::TorService;
+use crate::snf::SnFManager;
+use crate::message::{MessageType, MessageProtocol};
 
 /// Run the messenger in CLI/headless mode
 pub fn run_cli() {
@@ -67,10 +69,23 @@ pub fn run_cli() {
         attempts += 1;
         if attempts > 60 {
             println!("[!] Timeout waiting for onion address. Tor may still be bootstrapping.");
-            println!("[!] Check ~/.tor_messenger/tor_data/hidden_service/hostname for your address.");
-            break "unknown".to_string();
         }
     };
+
+    // Load the Ed25519 identity key from Tor for signing
+    println!("[*] Loading onion identity key for signatures...");
+    match tor_service.get_onion_secret_key() {
+        Ok(key_bytes) => {
+            if let Ok(mut c) = crypto.lock() {
+                if let Err(e) = c.set_onion_signing_key(&key_bytes) {
+                    println!("[!] Warning: Failed to load onion identity key: {}", e);
+                } else {
+                    println!("[✓] Identity linked to onion address!");
+                }
+            }
+        }
+        Err(e) => println!("[!] Warning: Could not load onion identity key: {}", e),
+    }
 
     // Now set up the message handler with access to tor_service for handshake responses
     let crypto_clone = Arc::clone(&crypto);
@@ -93,6 +108,71 @@ pub fn run_cli() {
     // Set the message handler on the tor service
     tor_service.set_message_handler(message_handler);
 
+    // Fetch offline messages from IPFS on startup
+    let our_onion = onion_address.clone();
+    let storage_fetch = Arc::clone(&storage);
+    let crypto_fetch = Arc::clone(&crypto);
+    let _peer_manager_fetch = Arc::clone(&peer_manager);
+    
+    thread::spawn(move || {
+        println!("[*] Checking IPFS for offline messages...");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            match SnFManager::fetch_offline_messages(&our_onion).await {
+                Ok(messages) => {
+                    if !messages.is_empty() {
+                        println!("[✓] Found {} offline messages on IPFS!", messages.len());
+                        for pkg in messages {
+                            // First Decryption: Decrypt the outer package to get the Message wrapper
+                            let crypto_l = crypto_fetch.lock().unwrap();
+                            if let Ok(msg_json) = crypto_l.decrypt_message(&pkg.encrypted_message) {
+                                    if let Ok(msg) = crate::message::Message::from_json(&msg_json) {
+                                        let sender = msg.sender_id.clone().unwrap_or_default();
+                                        
+                                            // 3. VERIFY Signature (Proof of Identity)
+                                            let mut is_verified = false;
+                                            if let Ok(c) = crypto_fetch.lock() {
+                                                is_verified = MessageProtocol::verify_message(&msg, "", &c);
+                                            }
+
+                                            if !is_verified {
+                                                println!("[!] Warning: Could not verify signature for message from {}. It may be faked!", sender);
+                                            }
+
+                                        // Second Decryption: Decrypt the inner message text
+                                        if msg.msg_type == MessageType::Text && msg.payload.get("encrypted").and_then(|v| v.as_bool()) == Some(true) {
+                                        if let Some(data) = msg.payload.get("data") {
+                                            if let Ok(encrypted_data) = serde_json::from_value::<crate::crypto::EncryptedData>(data.clone()) {
+                                                if let Ok(decrypted_text) = crypto_l.decrypt_message(&encrypted_data) {
+                                                    println!("\n[←] Recovered anonymous offline message from {}: {}", sender, decrypted_text);
+                                                    // Save to storage
+                                                    if let Ok(s) = storage_fetch.lock() {
+                                                        let payload = serde_json::json!({"text": &decrypted_text});
+                                                        let _ = s.save_message(
+                                                            &msg.id, "text",
+                                                            Some(&sender),
+                                                            Some(&our_onion),
+                                                            &payload, msg.timestamp, false,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        println!("[✓] No offline messages found on IPFS.");
+                    }
+                }
+                Err(e) => println!("[✗] Failed to fetch from IPFS: {}", e),
+            }
+        });
+        print!("> ");
+        io::stdout().flush().ok();
+    });
+
     println!();
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║                    SERVICE READY                         ║");
@@ -105,6 +185,7 @@ pub fn run_cli() {
     println!("  /send <onion_address> <message> - Send a message");
     println!("  /contacts                       - List contacts");
     println!("  /status                         - Show status");
+    println!("  /delete-all                     - Wipe ALL local data & keys");
     println!("  /quit                           - Exit");
     println!();
 
@@ -150,6 +231,31 @@ pub fn run_cli() {
                     Err(e) => println!("[✗] Error: {}", e),
                 }
             }
+        } else if input.starts_with("/delete-all") {
+            print!("[!] Are you sure you want to delete ALL data and keys? (y/N): ");
+            io::stdout().flush().unwrap();
+            let mut confirm = String::new();
+            if io::stdin().read_line(&mut confirm).is_ok() && confirm.trim().to_lowercase() == "y" {
+                println!("[*] Wiping all data...");
+                
+                // Clear database
+                if let Ok(s) = storage.lock() {
+                    let _ = s.clear_all_data();
+                }
+                
+                // Stop Tor first
+                tor_service.stop();
+                
+                // Delete keys and other files
+                let _ = std::fs::remove_file(crate::config::private_key_file());
+                let _ = std::fs::remove_file(crate::config::public_key_file());
+                let _ = std::fs::remove_file(crate::config::db_path());
+                
+                println!("[✓] All data wiped. Exiting.");
+                break;
+            } else {
+                println!("[*] WIPE CANCELLED.");
+            }
         } else if input.starts_with("/add ") {
             let parts: Vec<&str> = input[5..].splitn(2, ' ').collect();
             let addr = parts[0].trim();
@@ -175,8 +281,13 @@ pub fn run_cli() {
                         
                         // Send initial handshake (is_response = false)
                         let pk = crypto.lock().unwrap().get_public_key_pem().unwrap_or_default();
-                        let handshake = MessageProtocol::create_handshake_message(&onion_address, &pk, false);
+                        let mut handshake = MessageProtocol::create_handshake_message(&onion_address, &pk, false);
                         
+                        // Sign the handshake
+                        if let Ok(c) = crypto.lock() {
+                            let _ = MessageProtocol::sign_message(&mut handshake, &c);
+                        }
+
                         if let Ok(json) = handshake.to_json() {
                             let tor = Arc::clone(&tor_service);
                             let peer = addr.to_string();
@@ -222,11 +333,16 @@ pub fn run_cli() {
                 
                 match encrypt_result {
                     Ok(encrypted_data) => {
-                        let msg = MessageProtocol::wrap_encrypted_message(
+                        let mut msg = MessageProtocol::wrap_encrypted_message(
                             &encrypted_data,
                             &onion_address,
                             recipient,
                         );
+
+                        // 3. SIGN the message (Proof of Identity)
+                        if let Ok(c) = crypto.lock() {
+                            let _ = MessageProtocol::sign_message(&mut msg, &c);
+                        }
 
                         if let Ok(json) = msg.to_json() {
                             let tor = Arc::clone(&tor_service);
@@ -236,6 +352,7 @@ pub fn run_cli() {
                             let msg_id = msg.id.clone();
                             let timestamp = msg.timestamp;
                             let sender = onion_address.clone();
+                            let crypto_send = Arc::clone(&crypto);
 
                             thread::spawn(move || {
                                 match tor.send_message(&peer, &json) {
@@ -250,7 +367,22 @@ pub fn run_cli() {
                                             );
                                         }
                                     }
-                                    Err(e) => println!("[✗] Send failed: {}", e),
+                                    Err(e) => {
+                                        println!("[✗] Peer offline, uploading to IPFS... ({})", e);
+                                        // Fallback to IPFS
+                                        let crypto_ipfs = Arc::clone(&crypto_send);
+                                        let peer_pk = pk.clone(); // Public key of recipient
+                                        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                                        rt.block_on(async {
+                                            let crypto_snf = crypto_ipfs.lock().unwrap();
+                                            match SnFManager::upload_and_announce(
+                                                &peer, &peer_pk, &sender, &encrypted_data, &crypto_snf
+                                            ).await {
+                                                Ok(cid) => println!("[✓] Message pinned & announced to DHT. CID: {}", cid),
+                                                Err(e) => println!("[✗] IPFS backup failed: {}", e),
+                                            }
+                                        });
+                                    }
                                 }
                             });
                         }
@@ -360,8 +492,13 @@ fn handle_incoming_message(
                 
                 // Send response handshake
                 let our_pk = crypto.lock().unwrap().get_public_key_pem().unwrap_or_default();
-                let response_handshake = MessageProtocol::create_handshake_message(our_onion_address, &our_pk, true);
+                let mut response_handshake = MessageProtocol::create_handshake_message(our_onion_address, &our_pk, true);
                 
+                // Sign the handshake
+                if let Ok(c) = crypto.lock() {
+                    let _ = MessageProtocol::sign_message(&mut response_handshake, &c);
+                }
+
                 if let Ok(json) = response_handshake.to_json() {
                     let tor = Arc::clone(tor_service);
                     let peer = sender_id.clone();
@@ -383,6 +520,16 @@ fn handle_incoming_message(
         MessageType::Text => {
             let sender = msg.sender_id.as_ref().unwrap();
             
+            // 3. VERIFY Signature (Proof of Identity)
+            let mut is_verified = false;
+            if let Ok(c) = crypto.lock() {
+                is_verified = MessageProtocol::verify_message(&msg, "", &c);
+            }
+
+            if !is_verified {
+                println!("\n[!] Warning: Could not verify signature for message from {}. It may be faked!", sender);
+            }
+
             // STRICT: Text messages MUST be encrypted
             if msg.payload.get("encrypted").and_then(|v| v.as_bool()) != Some(true) {
                 println!("\n[⚠] Rejected unencrypted text message from {}", sender);

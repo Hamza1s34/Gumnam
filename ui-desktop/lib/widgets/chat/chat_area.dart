@@ -683,8 +683,8 @@ class _ChatAreaState extends State<ChatArea> {
                         searchViewConfig: const SearchViewConfig(
                           backgroundColor: AppTheme.sidebarBackground,
                           buttonIconColor: Colors.grey,
-                          hintTextStyle: TextStyle(color: Colors.grey),
-                          inputTextStyle: TextStyle(color: Colors.white),
+                          hintTextStyle: TextStyle(color: Colors.grey, fontSize: 16),
+                          inputTextStyle: TextStyle(color: Colors.white, fontSize: 16),
                         ),
                       ),
                     ),
@@ -1263,10 +1263,106 @@ class _ChatAreaState extends State<ChatArea> {
     
     // Default Text - use displayText if provided (for forwarded messages)
     final textToShow = displayText ?? message.text;
+    
+    // Check if this is a reply message (starts with ↩️)
+    if (textToShow.startsWith('↩️ ')) {
+      return _buildReplyMessageContent(textToShow, message.isSent);
+    }
+    
     return Text(
       _sanitizeText(textToShow),
       style: const TextStyle(color: Colors.white),
     );
+  }
+
+  /// Builds reply message with separated reply preview and actual message
+  Widget _buildReplyMessageContent(String text, bool isSent) {
+    // Parse reply format: ↩️ $replyPreview\n\n$actualMessage
+    final parts = text.split('\n\n');
+    String replyPreview = '';
+    String actualMessage = '';
+    
+    if (parts.isNotEmpty) {
+      // First part contains the reply preview (↩️ preview text)
+      replyPreview = parts[0].replaceFirst('↩️ ', '');
+      // Remaining parts are the actual message
+      if (parts.length > 1) {
+        actualMessage = parts.sublist(1).join('\n\n');
+      }
+    }
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Reply preview - dimmed and clickable
+        GestureDetector(
+          onTap: () => _scrollToReplyOriginal(replyPreview),
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(8),
+              border: Border(
+                left: BorderSide(
+                  color: isSent ? Colors.purple.withOpacity(0.6) : Colors.blue.withOpacity(0.6),
+                  width: 3,
+                ),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.reply,
+                  size: 14,
+                  color: Colors.white.withOpacity(0.5),
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    replyPreview,
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.6),
+                      fontSize: 13,
+                      fontStyle: FontStyle.italic,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        // Actual message
+        if (actualMessage.isNotEmpty)
+          Text(
+            _sanitizeText(actualMessage),
+            style: const TextStyle(color: Colors.white),
+          ),
+      ],
+    );
+  }
+
+  /// Find and scroll to the original message that was replied to
+  void _scrollToReplyOriginal(String replyPreview) {
+    final chatProvider = context.read<ChatProvider>();
+    final messages = chatProvider.messages;
+    
+    // Find the message that matches the reply preview
+    for (int i = 0; i < messages.length; i++) {
+      final msg = messages[i];
+      final msgPreview = _getMessagePreview(msg);
+      
+      // Check if this message matches the reply preview
+      if (msgPreview == replyPreview || msg.text.startsWith(replyPreview) || replyPreview.startsWith(msgPreview)) {
+        // Scroll to this message
+        _scrollToMessage(msg.id, messages);
+        break;
+      }
+    }
   }
 
   Widget _buildInputArea() {

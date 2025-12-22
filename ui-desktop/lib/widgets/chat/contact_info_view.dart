@@ -2,9 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tor_messenger_ui/generated/rust_bridge/api.dart';
 import 'package:tor_messenger_ui/services/chat_provider.dart';
 import 'package:tor_messenger_ui/theme/app_theme.dart';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:path_provider/path_provider.dart';
 
 class ContactInfoView extends StatefulWidget {
   final String onionAddress;
@@ -20,15 +25,86 @@ class ContactInfoView extends StatefulWidget {
   State<ContactInfoView> createState() => _ContactInfoViewState();
 }
 
-class _ContactInfoViewState extends State<ContactInfoView> {
+class _ContactInfoViewState extends State<ContactInfoView> with SingleTickerProviderStateMixin {
   ContactDetails? _details;
   bool _isLoading = true;
   String? _error;
+  late TabController _tabController;
+  bool _autoSaveMedia = false;
+
+  // Media lists
+  List<dynamic> _images = [];
+  List<dynamic> _audioMessages = [];
+  List<dynamic> _links = [];
+  List<dynamic> _files = [];
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 5, vsync: this);
     _loadContactDetails();
+    _loadAutoSavePreference();
+    _loadMediaFromChat();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadAutoSavePreference() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _autoSaveMedia = prefs.getBool('auto_save_media_${widget.onionAddress}') ?? false;
+    });
+  }
+
+  Future<void> _setAutoSavePreference(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('auto_save_media_${widget.onionAddress}', value);
+    setState(() {
+      _autoSaveMedia = value;
+    });
+  }
+
+  void _loadMediaFromChat() {
+    final chatProvider = context.read<ChatProvider>();
+    final messages = chatProvider.messages;
+
+    final images = <dynamic>[];
+    final audio = <dynamic>[];
+    final links = <dynamic>[];
+    final files = <dynamic>[];
+
+    // Regular expression to find URLs
+    final urlRegex = RegExp(
+      r'https?://[^\s<>\[\]{}|\\^`"]+',
+      caseSensitive: false,
+    );
+
+    for (final msg in messages) {
+      if (msg.msgType == 'image') {
+        images.add(msg);
+      } else if (msg.msgType == 'audio') {
+        audio.add(msg);
+      } else if (msg.msgType == 'file') {
+        files.add(msg);
+      } else {
+        // Check for links in text messages
+        final text = msg.text ?? '';
+        if (urlRegex.hasMatch(text)) {
+          links.add(msg);
+        }
+      }
+    }
+
+    setState(() {
+      _images = images;
+      _audioMessages = audio;
+      _links = links;
+      _files = files;
+    });
   }
 
   Future<void> _loadContactDetails() async {
@@ -209,10 +285,10 @@ class _ContactInfoViewState extends State<ContactInfoView> {
                   child: const Icon(Icons.person, color: Colors.white),
                 ),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Text(
-                    'Contact Information',
-                    style: TextStyle(
+                    _details != null ? _sanitizeText(_details!.nickname) : 'Contact Info',
+                    style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
                       color: AppTheme.textPrimary,
@@ -221,9 +297,31 @@ class _ContactInfoViewState extends State<ContactInfoView> {
                 ),
                 IconButton(
                   icon: const Icon(Icons.refresh),
-                  onPressed: _loadContactDetails,
+                  onPressed: () {
+                    _loadContactDetails();
+                    _loadMediaFromChat();
+                  },
                   tooltip: 'Refresh',
                 ),
+              ],
+            ),
+          ),
+
+          // Tab bar
+          Container(
+            color: AppTheme.sidebarBackground,
+            child: TabBar(
+              controller: _tabController,
+              isScrollable: true,
+              indicatorColor: AppTheme.primaryPurple,
+              labelColor: AppTheme.primaryPurple,
+              unselectedLabelColor: AppTheme.textSecondary,
+              tabs: [
+                const Tab(icon: Icon(Icons.info_outline), text: 'Info'),
+                Tab(icon: const Icon(Icons.image), text: 'Images (${_images.length})'),
+                Tab(icon: const Icon(Icons.mic), text: 'Audio (${_audioMessages.length})'),
+                Tab(icon: const Icon(Icons.link), text: 'Links (${_links.length})'),
+                Tab(icon: const Icon(Icons.insert_drive_file), text: 'Files (${_files.length})'),
               ],
             ),
           ),
@@ -249,7 +347,16 @@ class _ContactInfoViewState extends State<ContactInfoView> {
                         ),
                       )
                     : _details != null
-                        ? _buildDetailsContent(_details!)
+                        ? TabBarView(
+                            controller: _tabController,
+                            children: [
+                              _buildDetailsContent(_details!),
+                              _buildImagesTab(),
+                              _buildAudioTab(),
+                              _buildLinksTab(),
+                              _buildFilesTab(),
+                            ],
+                          )
                         : const Center(child: Text('No data')),
           ),
         ],
@@ -263,6 +370,48 @@ class _ContactInfoViewState extends State<ContactInfoView> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Auto-save media toggle
+          Container(
+            margin: const EdgeInsets.only(bottom: 24),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppTheme.sidebarBackground,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.download, color: AppTheme.primaryPurple),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Auto-save Media',
+                        style: TextStyle(
+                          color: AppTheme.textPrimary,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      Text(
+                        'Automatically save received media to Downloads',
+                        style: TextStyle(
+                          color: AppTheme.textSecondary,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch(
+                  value: _autoSaveMedia,
+                  onChanged: _setAutoSavePreference,
+                  activeColor: AppTheme.primaryPurple,
+                ),
+              ],
+            ),
+          ),
+
           // Profile header
           Center(
             child: Column(
@@ -500,5 +649,434 @@ class _ContactInfoViewState extends State<ContactInfoView> {
         ),
       ],
     );
+  }
+
+  // Images Tab
+  Widget _buildImagesTab() {
+    if (_images.isEmpty) {
+      return _buildEmptyState('No images', Icons.image_outlined);
+    }
+
+    return GridView.builder(
+      padding: const EdgeInsets.all(16),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+      ),
+      itemCount: _images.length,
+      itemBuilder: (context, index) {
+        final msg = _images[index];
+        return _buildImageTile(msg);
+      },
+    );
+  }
+
+  Widget _buildImageTile(dynamic msg) {
+    try {
+      final bytes = base64Decode(msg.text.replaceAll('\n', ''));
+      return GestureDetector(
+        onTap: () => _showImageFullScreen(bytes, msg),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            color: Colors.black26,
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Image.memory(
+                  bytes,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.grey),
+                ),
+                Positioned(
+                  bottom: 4,
+                  right: 4,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      _formatTime(msg.timestamp),
+                      style: const TextStyle(color: Colors.white, fontSize: 10),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    } catch (e) {
+      return Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          color: Colors.black26,
+        ),
+        child: const Icon(Icons.broken_image, color: Colors.grey),
+      );
+    }
+  }
+
+  void _showImageFullScreen(Uint8List bytes, dynamic msg) {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.transparent,
+        child: Stack(
+          children: [
+            Center(
+              child: InteractiveViewer(
+                child: Image.memory(bytes),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.download, color: Colors.white),
+                    onPressed: () => _saveImageToDownloads(bytes, msg.id),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Audio Tab
+  Widget _buildAudioTab() {
+    if (_audioMessages.isEmpty) {
+      return _buildEmptyState('No voice messages', Icons.mic_none);
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: _audioMessages.length,
+      itemBuilder: (context, index) {
+        final msg = _audioMessages[index];
+        return _buildAudioTile(msg);
+      },
+    );
+  }
+
+  Widget _buildAudioTile(dynamic msg) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.sidebarBackground,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: AppTheme.primaryPurple.withOpacity(0.2),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.mic, color: AppTheme.primaryPurple),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Voice Message',
+                  style: TextStyle(
+                    color: AppTheme.textPrimary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                Text(
+                  _formatDateTime(msg.timestamp),
+                  style: const TextStyle(
+                    color: AppTheme.textSecondary,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.download, color: AppTheme.primaryPurple),
+            onPressed: () => _saveAudioToDownloads(msg),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Links Tab
+  Widget _buildLinksTab() {
+    if (_links.isEmpty) {
+      return _buildEmptyState('No links', Icons.link_off);
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: _links.length,
+      itemBuilder: (context, index) {
+        final msg = _links[index];
+        return _buildLinkTile(msg);
+      },
+    );
+  }
+
+  Widget _buildLinkTile(dynamic msg) {
+    final text = msg.text ?? '';
+    final urlRegex = RegExp(r'https?://[^\s<>\[\]{}|\\^`"]+', caseSensitive: false);
+    final matches = urlRegex.allMatches(text);
+    final urls = matches.map((m) => m.group(0)!).toList();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.sidebarBackground,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final url in urls)
+            InkWell(
+              onTap: () => _copyToClipboard(url, 'Link'),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.link, color: AppTheme.primaryPurple, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        url,
+                        style: const TextStyle(
+                          color: Colors.blue,
+                          decoration: TextDecoration.underline,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.copy, size: 18, color: AppTheme.textSecondary),
+                      onPressed: () => _copyToClipboard(url, 'Link'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          Text(
+            _formatDateTime(msg.timestamp),
+            style: const TextStyle(
+              color: AppTheme.textSecondary,
+              fontSize: 11,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Files Tab
+  Widget _buildFilesTab() {
+    if (_files.isEmpty) {
+      return _buildEmptyState('No files', Icons.folder_open);
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: _files.length,
+      itemBuilder: (context, index) {
+        final msg = _files[index];
+        return _buildFileTile(msg);
+      },
+    );
+  }
+
+  Widget _buildFileTile(dynamic msg) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.sidebarBackground,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: AppTheme.primaryPurple.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Icon(Icons.insert_drive_file, color: AppTheme.primaryPurple),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'File',
+                  style: TextStyle(
+                    color: AppTheme.textPrimary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                Text(
+                  _formatDateTime(msg.timestamp),
+                  style: const TextStyle(
+                    color: AppTheme.textSecondary,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.download, color: AppTheme.primaryPurple),
+            onPressed: () => _saveFileToDownloads(msg),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyState(String message, IconData icon) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 64, color: AppTheme.textSecondary.withOpacity(0.5)),
+          const SizedBox(height: 16),
+          Text(
+            message,
+            style: TextStyle(
+              color: AppTheme.textSecondary.withOpacity(0.7),
+              fontSize: 16,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatTime(int timestamp) {
+    final date = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
+    return DateFormat('h:mm a').format(date);
+  }
+
+  Future<void> _saveImageToDownloads(Uint8List bytes, String msgId) async {
+    try {
+      final downloadsDir = await _getDownloadsDirectory();
+      final fileName = 'image_$msgId.png';
+      final file = File('${downloadsDir.path}/$fileName');
+      await file.writeAsBytes(bytes);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Image saved to Downloads: $fileName'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to save image: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _saveAudioToDownloads(dynamic msg) async {
+    try {
+      final bytes = base64Decode(msg.text.replaceAll('\n', ''));
+      final downloadsDir = await _getDownloadsDirectory();
+      final fileName = 'audio_${msg.id}.m4a';
+      final file = File('${downloadsDir.path}/$fileName');
+      await file.writeAsBytes(bytes);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Audio saved to Downloads: $fileName'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to save audio: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _saveFileToDownloads(dynamic msg) async {
+    try {
+      final bytes = base64Decode(msg.text.replaceAll('\n', ''));
+      final downloadsDir = await _getDownloadsDirectory();
+      final fileName = 'file_${msg.id}';
+      final file = File('${downloadsDir.path}/$fileName');
+      await file.writeAsBytes(bytes);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('File saved to Downloads: $fileName'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to save file: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<Directory> _getDownloadsDirectory() async {
+    if (Platform.isMacOS) {
+      final home = Platform.environment['HOME'];
+      return Directory('$home/Downloads');
+    } else if (Platform.isWindows) {
+      final userProfile = Platform.environment['USERPROFILE'];
+      return Directory('$userProfile\\Downloads');
+    } else {
+      // Linux and others
+      final home = Platform.environment['HOME'];
+      return Directory('$home/Downloads');
+    }
   }
 }

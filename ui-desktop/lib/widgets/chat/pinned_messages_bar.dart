@@ -193,6 +193,19 @@ class _PinnedMessagesBarState extends State<PinnedMessagesBar> {
                     ),
                     tooltip: 'Go to message',
                   ),
+                  // Unpin button (X)
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    color: AppTheme.textSecondary,
+                    onPressed: () {
+                      widget.onUnpin(widget.pinnedMessages[_currentIndex].id);
+                      // Reset index if needed
+                      if (_currentIndex >= widget.pinnedMessages.length - 1 && _currentIndex > 0) {
+                        setState(() => _currentIndex = widget.pinnedMessages.length - 2);
+                      }
+                    },
+                    tooltip: 'Unpin',
+                  ),
                   // Expand/collapse button for multiple messages
                   if (widget.pinnedMessages.length > 1)
                     IconButton(

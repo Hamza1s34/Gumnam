@@ -553,6 +553,22 @@ impl TorService {
         )
         .is_ok()
     }
+
+    /// Load the Ed25519 secret key for the onion identity
+    pub fn get_onion_secret_key(&self) -> anyhow::Result<Vec<u8>> {
+        let key_file = config::hidden_service_dir().join("hs_ed25519_secret_key");
+        if !key_file.exists() {
+            return Err(anyhow::anyhow!("Tor secret key file not found yet. Is Tor finished bootstrapping?"));
+        }
+        
+        let data = fs::read(&key_file)?;
+        if data.len() < 96 {
+            return Err(anyhow::anyhow!("Invalid Tor secret key file size"));
+        }
+        
+        // Tor v3 keys have a 32-byte header, then 64 bytes of key (32 seed + 32 pub)
+        Ok(data[32..96].to_vec())
+    }
 }
 
 impl Drop for TorService {

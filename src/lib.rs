@@ -5,3 +5,4 @@ pub mod message;
 pub mod peer;
 pub mod storage;
 pub mod tor_service;
+pub mod snf;
