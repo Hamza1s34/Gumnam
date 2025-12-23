@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Tor Messenger"]
 description = "serverless privacy focused messenger app"
+license = "MIT"
 
 [dependencies]
 # Async Runtime
