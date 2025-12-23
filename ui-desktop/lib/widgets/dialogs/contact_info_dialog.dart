@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
-import 'package:tor_messenger_ui/generated/rust_bridge/api.dart';
-import 'package:tor_messenger_ui/theme/app_theme.dart';
+import 'package:gumnam/generated/rust_bridge/api.dart';
+import 'package:gumnam/theme/app_theme.dart';
 
 class ContactInfoDialog extends StatefulWidget {
   final String onionAddress;

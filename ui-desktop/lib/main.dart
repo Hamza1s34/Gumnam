@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:tor_messenger_ui/screens/home_screen.dart';
-import 'package:tor_messenger_ui/theme/app_theme.dart';
+import 'package:gumnam/screens/home_screen.dart';
+import 'package:gumnam/theme/app_theme.dart';
 
-import 'package:tor_messenger_ui/generated/rust_bridge/frb_generated.dart';
+import 'package:gumnam/generated/rust_bridge/frb_generated.dart';
 
 import 'package:provider/provider.dart';
-import 'package:tor_messenger_ui/services/tor_service_provider.dart';
-import 'package:tor_messenger_ui/services/chat_provider.dart';
+import 'package:gumnam/services/tor_service_provider.dart';
+import 'package:gumnam/services/chat_provider.dart';
 
 import 'package:local_notifier/local_notifier.dart';
 import 'package:window_manager/window_manager.dart';
@@ -16,17 +16,17 @@ Future<void> main() async {
   
   await windowManager.ensureInitialized();
   await localNotifier.setup(
-    appName: 'Tor Messenger',
+    appName: 'Gumnam',
     // The parameter shortcutPolicy only works on Windows
     shortcutPolicy: ShortcutPolicy.requireCreate,
   );
 
   await RustLib.init();
-  runApp(const TorMessengerApp());
+  runApp(const GumnamApp());
 }
 
-class TorMessengerApp extends StatelessWidget {
-  const TorMessengerApp({super.key});
+class GumnamApp extends StatelessWidget {
+  const GumnamApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -36,7 +36,7 @@ class TorMessengerApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => ChatProvider()..loadContacts()),
       ],
       child: MaterialApp(
-        title: 'Tor Messenger',
+        title: 'Gumnam',
         theme: AppTheme.darkTheme,
         home: const HomeScreen(),
         debugShowCheckedModeBanner: false,

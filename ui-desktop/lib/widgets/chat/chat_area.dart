@@ -2,15 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
-import 'package:tor_messenger_ui/services/chat_provider.dart';
-import 'package:tor_messenger_ui/services/pinned_messages_manager.dart';
-import 'package:tor_messenger_ui/theme/app_theme.dart';
-import 'package:tor_messenger_ui/widgets/dialogs/contact_info_dialog.dart';
-import 'package:tor_messenger_ui/widgets/chat/contact_info_view.dart';
-import 'package:tor_messenger_ui/widgets/chat/message_bubble.dart';
-import 'package:tor_messenger_ui/widgets/chat/message_reactions.dart';
-import 'package:tor_messenger_ui/widgets/chat/pinned_messages_bar.dart';
-import 'package:tor_messenger_ui/widgets/profile/my_profile_view.dart';
+import 'package:gumnam/services/chat_provider.dart';
+import 'package:gumnam/services/pinned_messages_manager.dart';
+import 'package:gumnam/theme/app_theme.dart';
+import 'package:gumnam/widgets/dialogs/contact_info_dialog.dart';
+import 'package:gumnam/widgets/chat/contact_info_view.dart';
+import 'package:gumnam/widgets/chat/message_bubble.dart';
+import 'package:gumnam/widgets/chat/message_reactions.dart';
+import 'package:gumnam/widgets/chat/pinned_messages_bar.dart';
+import 'package:gumnam/widgets/profile/my_profile_view.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'dart:io';
 import 'dart:convert';
@@ -712,7 +712,7 @@ class _ChatAreaState extends State<ChatArea> {
             ),
             const SizedBox(height: 24),
             const Text(
-              'Welcome to Tor Messenger',
+              'Welcome to Gumnam',
               style: TextStyle(
                 fontSize: 24,
                 fontWeight: FontWeight.bold,

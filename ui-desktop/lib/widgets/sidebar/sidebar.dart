@@ -2,12 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
-import 'package:tor_messenger_ui/services/tor_service_provider.dart';
-import 'package:tor_messenger_ui/services/chat_provider.dart';
-import 'package:tor_messenger_ui/theme/app_theme.dart';
-import 'package:tor_messenger_ui/widgets/dialogs/new_chat_dialog.dart';
-import 'package:tor_messenger_ui/widgets/dialogs/contact_info_dialog.dart';
-import 'package:tor_messenger_ui/screens/settings_screen.dart';
+import 'package:gumnam/services/tor_service_provider.dart';
+import 'package:gumnam/services/chat_provider.dart';
+import 'package:gumnam/theme/app_theme.dart';
+import 'package:gumnam/widgets/dialogs/new_chat_dialog.dart';
+import 'package:gumnam/widgets/dialogs/contact_info_dialog.dart';
+import 'package:gumnam/screens/settings_screen.dart';
 
 class Sidebar extends StatefulWidget {
   const Sidebar({super.key});

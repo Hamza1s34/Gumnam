@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
-import 'package:tor_messenger_ui/theme/app_theme.dart';
-import 'package:tor_messenger_ui/widgets/chat/message_reactions.dart';
+import 'package:gumnam/theme/app_theme.dart';
+import 'package:gumnam/widgets/chat/message_reactions.dart';
 
 /// A message bubble widget with hover menu support
 class MessageBubble extends StatefulWidget {

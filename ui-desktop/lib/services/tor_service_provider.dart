@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:tor_messenger_ui/generated/rust_bridge/frb_generated.dart';
+import 'package:gumnam/generated/rust_bridge/frb_generated.dart';
 
 class TorServiceProvider extends ChangeNotifier {
   String _onionAddress = '';

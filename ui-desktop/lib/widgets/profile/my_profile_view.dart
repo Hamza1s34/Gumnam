@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:tor_messenger_ui/generated/rust_bridge/api.dart';
-import 'package:tor_messenger_ui/services/tor_service_provider.dart';
-import 'package:tor_messenger_ui/theme/app_theme.dart';
+import 'package:gumnam/generated/rust_bridge/api.dart';
+import 'package:gumnam/services/tor_service_provider.dart';
+import 'package:gumnam/theme/app_theme.dart';
 
 class MyProfileView extends StatefulWidget {
   final VoidCallback onBack;

@@ -3,7 +3,7 @@
 //! A peer-to-peer messaging application using Tor hidden services
 //! for anonymous, end-to-end encrypted communication.
 
-use tor_messenger::cli;
+use gumnam::cli;
 
 fn main() {
     // Initialize logger

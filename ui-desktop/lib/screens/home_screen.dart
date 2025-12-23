@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:tor_messenger_ui/services/chat_provider.dart';
-import 'package:tor_messenger_ui/services/tor_service_provider.dart';
-import 'package:tor_messenger_ui/widgets/sidebar/sidebar.dart';
-import 'package:tor_messenger_ui/widgets/chat/chat_area.dart';
+import 'package:gumnam/services/chat_provider.dart';
+import 'package:gumnam/services/tor_service_provider.dart';
+import 'package:gumnam/widgets/sidebar/sidebar.dart';
+import 'package:gumnam/widgets/chat/chat_area.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});

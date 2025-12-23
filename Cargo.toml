@@ -1,9 +1,9 @@
 [package]
-name = "tor_messenger"
+name = "gumnam"
 version = "0.1.0"
 edition = "2021"
 authors = ["Tor Messenger"]
-description = "Serverless peer-to-peer messaging over Tor hidden services"
+description = "serverless privacy focused messenger app"
 
 [dependencies]
 # Async Runtime

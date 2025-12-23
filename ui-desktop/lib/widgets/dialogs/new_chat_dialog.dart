@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:tor_messenger_ui/services/chat_provider.dart';
-import 'package:tor_messenger_ui/theme/app_theme.dart';
+import 'package:gumnam/services/chat_provider.dart';
+import 'package:gumnam/theme/app_theme.dart';
 
 class NewChatDialog extends StatefulWidget {
   const NewChatDialog({super.key});

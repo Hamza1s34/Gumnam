@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:tor_messenger_ui/theme/app_theme.dart';
+import 'package:gumnam/theme/app_theme.dart';
 
 /// A bar that shows pinned messages at the top of the chat
 class PinnedMessagesBar extends StatefulWidget {
