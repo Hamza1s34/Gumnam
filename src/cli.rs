@@ -457,24 +457,16 @@ fn handle_incoming_message(
         MessageType::Handshake => {
             let sender_id = msg.sender_id.as_ref().unwrap();
             
-            // STRICT: Must have public_key
-            let public_key = match msg.payload.get("public_key").and_then(|v| v.as_str()) {
-                Some(pk) => pk,
-                None => {
-                    println!("\n[⚠] Rejected handshake without public_key from {}", sender_id);
-                    print!("> ");
-                    io::stdout().flush().ok();
-                    return;
-                }
-            };
+            // Public key is now optional/irrelevant for ECIES if you have the onion address
+            let _public_key = msg.payload.get("public_key").and_then(|v| v.as_str());
             
             let is_response = msg.payload.get("is_response")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             
-            // Save the sender's public key
+            // Save/Update the peer status
             if let Ok(mut pm) = peer_manager.lock() {
-                let _ = pm.add_peer(sender_id, None, Some(public_key));
+                let _ = pm.add_peer(sender_id, None, _public_key);
                 pm.mark_peer_online(sender_id, None);
             }
             
@@ -509,7 +501,7 @@ fn handle_incoming_message(
             print!("> ");
             io::stdout().flush().ok();
         }
-        MessageType::Text => {
+        MessageType::Text | MessageType::Encrypted => {
             let sender = msg.sender_id.as_ref().unwrap();
             
             // 3. VERIFY Signature (Proof of Identity)
