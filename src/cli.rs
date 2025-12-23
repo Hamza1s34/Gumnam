@@ -510,8 +510,10 @@ fn handle_incoming_message(
                 is_verified = MessageProtocol::verify_message(&msg, &c);
             }
 
-            if !is_verified {
-                println!("\n[!] Warning: Could not verify signature for message from {}. It may be faked!", sender);
+            if is_verified {
+                println!("\n[✓ SIGNATURE VERIFIED] Message from {} is authentic.", sender);
+            } else {
+                println!("\n[⚠ SIGNATURE FAILED] Could not verify message from {}. It may be faked!", sender);
             }
 
             // STRICT: Text messages MUST be encrypted
