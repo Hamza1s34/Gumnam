@@ -312,7 +312,8 @@ pub fn run_cli() {
                 }
             });
         } else if input.starts_with("/send ") {
-            let parts: Vec<&str> = input[6..].splitn(2, ' ').collect();
+            let stripped = input[6..].trim_start();
+            let parts: Vec<&str> = stripped.splitn(2, ' ').collect();
             if parts.len() < 2 {
                 println!("[!] Usage: /send <onion_address> <message>");
                 continue;

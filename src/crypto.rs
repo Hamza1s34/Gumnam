@@ -158,6 +158,12 @@ impl CryptoHandler {
         let hash = hasher.finalize();
         let mut x_sk = [0u8; 32];
         x_sk.copy_from_slice(&hash[0..32]);
+        
+        // Clamping (pruning) the secret key for X25519
+        x_sk[0]  &= 248;
+        x_sk[31] &= 127;
+        x_sk[31] |= 64;
+        
         x_sk
     }
 
@@ -187,7 +193,7 @@ impl CryptoHandler {
     }
 
     pub fn onion_to_pubkey(onion: &str) -> anyhow::Result<VerifyingKey> {
-        let onion = onion.trim_end_matches(".onion").to_lowercase();
+        let onion = onion.trim().trim_end_matches(".onion").to_lowercase();
         if onion.len() != 56 {
             return Err(anyhow::anyhow!("Invalid onion address length (must be v3)"));
         }
@@ -294,5 +300,27 @@ mod tests {
         let invalid_version = "v2c76pdyv642lr3mc72ycofvtqsqm477fntit5t2lyw3v6n2p6m4jqya.onion"; // ends in 'a' (0x00? no, 'a' is 0 in base32)
         let res_ver = CryptoHandler::onion_to_pubkey(invalid_version);
         assert!(res_ver.is_err());
+    }
+
+    #[test]
+    fn test_key_conversion_consistency() {
+        // This test verifies that the public key derived from our converted secret key
+        // matches the public key derived from scaling the Ed25519 public key.
+        
+        let mut rng = rand::thread_rng();
+        let ed_sk = SigningKey::generate(&mut rng);
+        let ed_pk = ed_sk.verifying_key();
+        
+        // 1. Convert secret key to X25519 and get public key from it
+        let x_sk_bytes = CryptoHandler::ed25519_sk_to_x25519(&ed_sk);
+        let x_sk = StaticSecret::from(x_sk_bytes);
+        let x_pk_from_sk = XPublicKey::from(&x_sk);
+        
+        // 2. Convert public key directly to X25519
+        let x_pk_from_pk_bytes = CryptoHandler::ed25519_pk_to_x25519(&ed_pk);
+        let x_pk_from_pk = XPublicKey::from(x_pk_from_pk_bytes);
+        
+        // They must be identical for ECIES to work across two parties!
+        assert_eq!(x_pk_from_sk.as_bytes(), x_pk_from_pk.as_bytes());
     }
 }

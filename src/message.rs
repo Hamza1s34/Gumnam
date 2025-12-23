@@ -4,7 +4,7 @@
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// Types of messages in the protocol
@@ -21,6 +21,7 @@ pub enum MessageType {
     Audio,
     File,
     Ipfs,
+    Encrypted,
 }
 
 impl MessageType {
@@ -36,6 +37,7 @@ impl MessageType {
             MessageType::Audio => "audio",
             MessageType::File => "file",
             MessageType::Ipfs => "ipfs",
+            MessageType::Encrypted => "encrypted",
         }
     }
 }
@@ -46,7 +48,7 @@ pub struct Message {
     pub id: String,
     #[serde(rename = "type")]
     pub msg_type: MessageType,
-    pub payload: HashMap<String, serde_json::Value>,
+    pub payload: BTreeMap<String, serde_json::Value>,
     pub timestamp: i64,
     pub sender_id: Option<String>,
     pub recipient_id: Option<String>,
@@ -58,7 +60,7 @@ impl Message {
     /// Create a new message
     pub fn new(
         msg_type: MessageType,
-        payload: HashMap<String, serde_json::Value>,
+        payload: BTreeMap<String, serde_json::Value>,
         sender_id: Option<String>,
         recipient_id: Option<String>,
     ) -> Self {
@@ -70,7 +72,7 @@ impl Message {
             sender_id,
             recipient_id,
             signature: None,
-            version: "1.0".to_string(),
+            version: "2.0".to_string(),
         }
     }
 
@@ -91,7 +93,7 @@ pub struct MessageProtocol;
 impl MessageProtocol {
     /// Create a text message
     pub fn create_text_message(text: &str, sender_id: &str, recipient_id: &str) -> Message {
-        let mut payload = HashMap::new();
+        let mut payload = BTreeMap::new();
         payload.insert(
             "text".to_string(),
             serde_json::Value::String(text.to_string()),
@@ -108,7 +110,7 @@ impl MessageProtocol {
     /// Create a handshake message
     /// is_response: true if this is a response to a received handshake, false if initiating
     pub fn create_handshake_message(sender_id: &str, is_response: bool) -> Message {
-        let mut payload = HashMap::new();
+        let mut payload = BTreeMap::new();
         payload.insert(
             "protocol_version".to_string(),
             serde_json::Value::String("2.0".to_string()), // Upgraded protocol version
@@ -123,7 +125,7 @@ impl MessageProtocol {
 
     /// Create an acknowledgment message
     pub fn create_ack_message(original_msg_id: &str, sender_id: &str) -> Message {
-        let mut payload = HashMap::new();
+        let mut payload = BTreeMap::new();
         payload.insert(
             "original_msg_id".to_string(),
             serde_json::Value::String(original_msg_id.to_string()),
@@ -136,7 +138,7 @@ impl MessageProtocol {
     pub fn create_ping_message(sender_id: &str) -> Message {
         Message::new(
             MessageType::Ping,
-            HashMap::new(),
+            BTreeMap::new(),
             Some(sender_id.to_string()),
             None,
         )
@@ -146,7 +148,7 @@ impl MessageProtocol {
     pub fn create_pong_message(sender_id: &str) -> Message {
         Message::new(
             MessageType::Pong,
-            HashMap::new(),
+            BTreeMap::new(),
             Some(sender_id.to_string()),
             None,
         )
@@ -233,7 +235,7 @@ impl MessageProtocol {
         sender_id: &str,
         recipient_id: &str,
     ) -> Message {
-        let mut payload = HashMap::new();
+        let mut payload = BTreeMap::new();
         payload.insert(
             "encrypted".to_string(),
             serde_json::Value::Bool(true),
@@ -244,7 +246,7 @@ impl MessageProtocol {
         );
 
         Message::new(
-            MessageType::Text,
+            MessageType::Encrypted,
             payload,
             Some(sender_id.to_string()),
             Some(recipient_id.to_string()),
