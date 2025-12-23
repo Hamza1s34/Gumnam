@@ -135,30 +135,6 @@ class _ContactInfoViewState extends State<ContactInfoView> with SingleTickerProv
     );
   }
 
-  Future<void> _resendHandshake() async {
-    try {
-      await sendHandshakeToContact(onionAddress: widget.onionAddress);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Handshake sent successfully'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        // Reload contact details after handshake
-        _loadContactDetails();
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to send handshake: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
 
   // Sanitize text to handle malformed UTF-16 characters
   String _sanitizeText(String text) {
@@ -452,27 +428,26 @@ class _ContactInfoViewState extends State<ContactInfoView> with SingleTickerProv
                   ],
                 ),
                 const SizedBox(height: 8),
+                // ECIES Encryption Status (always secure with onion address)
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    color: details.publicKey != null 
-                        ? Colors.green.withOpacity(0.2) 
-                        : Colors.orange.withOpacity(0.2),
+                    color: Colors.green.withOpacity(0.2),
                     borderRadius: BorderRadius.circular(16),
                   ),
-                  child: Row(
+                  child: const Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
-                        details.publicKey != null ? Icons.verified_user : Icons.warning,
+                        Icons.verified_user,
                         size: 16,
-                        color: details.publicKey != null ? Colors.green : Colors.orange,
+                        color: Colors.green,
                       ),
-                      const SizedBox(width: 6),
+                      SizedBox(width: 6),
                       Text(
-                        details.publicKey != null ? 'Key Exchanged' : 'No Key Exchange',
+                        'ECIES Encrypted',
                         style: TextStyle(
-                          color: details.publicKey != null ? Colors.green : Colors.orange,
+                          color: Colors.green,
                           fontWeight: FontWeight.w500,
                         ),
                       ),
@@ -514,58 +489,45 @@ class _ContactInfoViewState extends State<ContactInfoView> with SingleTickerProv
 
           const SizedBox(height: 24),
 
-          // Public Key section
+          // Encryption section (ECIES - no handshake needed)
           _buildSection(
-            title: 'Public Key',
-            icon: Icons.key,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (details.publicKey != null) ...[
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.black26,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
+            title: 'Encryption',
+            icon: Icons.lock,
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.green.withOpacity(0.3)),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.verified_user, color: Colors.green),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(
-                          child: SelectableText(
-                            details.publicKey!,
-                            style: const TextStyle(
-                              fontSize: 10,
-                              color: AppTheme.textSecondary,
-                              fontFamily: 'monospace',
-                            ),
-                            maxLines: 5,
+                        Text(
+                          'ECIES (Ed25519-X25519)',
+                          style: TextStyle(
+                            color: Colors.green,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
-                        IconButton(
-                          icon: const Icon(Icons.copy, size: 20),
-                          onPressed: () => _copyToClipboard(details.publicKey!, 'Public key'),
-                          tooltip: 'Copy public key',
+                        SizedBox(height: 4),
+                        Text(
+                          'End-to-end encryption using onion address keys',
+                          style: TextStyle(
+                            color: AppTheme.textSecondary,
+                            fontSize: 12,
+                          ),
                         ),
                       ],
                     ),
                   ),
-                ] else ...[
-                  const Text(
-                    'Not yet exchanged',
-                    style: TextStyle(color: Colors.orange),
-                  ),
-                  const SizedBox(height: 12),
-                  ElevatedButton.icon(
-                    onPressed: _resendHandshake,
-                    icon: const Icon(Icons.handshake),
-                    label: const Text('Send Handshake'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.primaryPurple,
-                      foregroundColor: Colors.white,
-                    ),
-                  ),
                 ],
-              ],
+              ),
             ),
           ),
 

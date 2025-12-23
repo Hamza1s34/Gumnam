@@ -137,14 +137,14 @@ pub fn stop_tor() {
     }
 }
 
-/// Get my own public key
+/// Get my own onion address (ECIES - public key derived from onion address)
 pub fn get_my_public_key() -> anyhow::Result<String> {
-    let crypto_guard = CRYPTO.lock().unwrap();
-    if let Some(crypto) = crypto_guard.as_ref() {
-        crypto.get_public_key_pem()
-            .map_err(|e| anyhow::anyhow!(e.to_string()))
+    // ECIES: We don't need a separate public key, just return the onion address
+    let onion = get_onion_address();
+    if onion.is_empty() {
+        Err(anyhow::anyhow!("Tor not started"))
     } else {
-        Err(anyhow::anyhow!("Crypto not initialized"))
+        Ok(onion)
     }
 }
 
@@ -173,8 +173,9 @@ fn handle_incoming_message(msg_str: &str) {
     // STRICT: Must be a valid protocol message
     let msg = match ProtocolMessage::from_json(msg_str) {
         Ok(m) => m,
-        Err(_) => {
-            println!("⚠ [Flutter] Rejected invalid protocol message format");
+        Err(e) => {
+            println!("⚠ [Flutter] Rejected invalid protocol message format: {}", e);
+            println!("[DEBUG] Raw message (first 500 chars): {:.500}", msg_str);
             return;
         }
     };
@@ -189,8 +190,12 @@ fn handle_incoming_message(msg_str: &str) {
         MessageType::Handshake => {
             handle_handshake_message(&msg);
         }
+        MessageType::Encrypted => {
+            // ECIES encrypted messages - decrypt directly
+            handle_encrypted_message(&msg);
+        }
         MessageType::Text => {
-            // STRICT: Text messages MUST be encrypted
+            // STRICT: Text messages MUST be encrypted (legacy format)
             if msg.payload.get("encrypted").and_then(|v| v.as_bool()) != Some(true) {
                 println!("⚠ [Flutter] Rejected unencrypted text message from {:?}", msg.sender_id);
                 return;
@@ -207,6 +212,7 @@ fn handle_incoming_message(msg_str: &str) {
         }
         _ => {
             // Ignore other message types
+            println!("ℹ [Flutter] Ignoring message type: {:?}", msg.msg_type);
         }
     }
 }
@@ -262,94 +268,151 @@ fn handle_web_message(msg_data: &serde_json::Value) {
     println!("📨 [Flutter] Web message from '{}': {}", sender, text);
 }
 
-/// Handle handshake messages - exchange keys with peers
+/// Handle handshake messages - ECIES doesn't require public key exchange,
+/// but we still accept handshakes to add contacts and maintain compatibility
 fn handle_handshake_message(msg: &ProtocolMessage) {
-    // sender_id is guaranteed to exist (checked in handle_incoming_message)
     let sender_id = msg.sender_id.as_ref().unwrap();
-    
-    // STRICT: Must have public_key in payload
-    let public_key = match msg.payload.get("public_key").and_then(|v| v.as_str()) {
-        Some(pk) => pk,
-        None => {
-            println!("⚠ [Flutter] Rejected handshake without public_key from {}", sender_id);
-            return;
-        }
-    };
     
     let is_response = msg.payload.get("is_response")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     
-    // Save the sender's public key (preserving existing nickname)
+    // ECIES: We don't need public keys, just add the contact
+    if let Ok(storage_guard) = STORAGE.lock() {
+        if let Some(storage) = storage_guard.as_ref() {
+            // Check if contact already exists
+            let contact_exists = storage.get_contact(sender_id).ok().flatten().is_some();
+            if !contact_exists {
+                let default_nickname = &sender_id[..std::cmp::min(16, sender_id.len())];
+                let _ = storage.add_contact(sender_id, Some(default_nickname), None);
+                println!("✓ [Flutter] Added new contact from handshake: {}", sender_id);
+            }
+        }
+    }
+    
+    // Update peer manager (for online status)
     if let Ok(mut pm) = PEER_MANAGER.lock() {
         if let Some(ref mut peer_manager) = *pm {
-            // First check if contact exists - if so, update key preserving nickname
-            // If not, create new contact with address prefix as nickname
-            if peer_manager.get_peer(sender_id).ok().flatten().is_some() {
-                let _ = peer_manager.update_peer_key(sender_id, public_key);
-            } else {
-                // New contact - use first 8 chars of address as nickname
-                let default_nickname = &sender_id[..std::cmp::min(8, sender_id.len())];
-                let _ = peer_manager.add_peer(sender_id, Some(default_nickname), Some(public_key));
-            }
             peer_manager.mark_peer_online(sender_id, None);
         }
     }
     
     if is_response {
-        println!("✓ [Flutter] Response handshake from: {} (key exchange complete)", sender_id);
+        println!("✓ [Flutter ECIES] Handshake response from: {}", sender_id);
     } else {
-        println!("✓ [Flutter] Handshake from: {} (sending response)", sender_id);
+        println!("✓ [Flutter ECIES] Handshake from: {} (sending response)", sender_id);
         
-        // Send response handshake with our public key
-        if let Ok(crypto_guard) = CRYPTO.lock() {
-            if let Some(ref crypto) = *crypto_guard {
-                if let Ok(our_pk) = crypto.get_public_key_pem() {
-                    let our_onion = get_onion_address();
-                    let response_handshake = MessageProtocol::create_handshake_message(&our_onion, &our_pk, true);
-                    
-                    if let Ok(json) = response_handshake.to_json() {
-                        let peer = sender_id.clone();
-                        let json_clone = json.clone();
-                        std::thread::spawn(move || {
-                            let service_guard = TOR_SERVICE.lock().unwrap();
-                            if let Some(ref service) = *service_guard {
-                                match service.send_message(&peer, &json_clone) {
-                                    Ok(_) => println!("✓ [Flutter] Response handshake sent to {}", peer),
-                                    Err(e) => println!("✗ [Flutter] Response handshake failed: {}", e),
-                                }
-                            }
-                        });
+        // Send a simple response handshake (no public key needed for ECIES)
+        let our_onion = get_onion_address();
+        let response_handshake = MessageProtocol::create_handshake_message(&our_onion, true);
+        
+        if let Ok(json) = response_handshake.to_json() {
+            let peer = sender_id.clone();
+            let json_clone = json.clone();
+            std::thread::spawn(move || {
+                let service_guard = TOR_SERVICE.lock().unwrap();
+                if let Some(ref service) = *service_guard {
+                    match service.send_message(&peer, &json_clone) {
+                        Ok(_) => println!("✓ [Flutter] Response handshake sent to {}", peer),
+                        Err(e) => println!("✗ [Flutter] Response handshake failed: {}", e),
                     }
                 }
-            }
+            });
         }
     }
 }
 
-/// Initiate a handshake with a peer to exchange public keys
-fn initiate_handshake(peer_address: &str) {
-    println!("🤝 [Flutter] Initiating handshake with {}", peer_address);
+/// Handle ECIES encrypted messages (new format from CLI)
+fn handle_encrypted_message(msg: &ProtocolMessage) {
+    let sender = msg.sender_id.as_ref().unwrap().clone();
     
+    // Extract encrypted data from payload
+    let encrypted_data = match msg.payload.get("data") {
+        Some(data) => {
+            match serde_json::from_value::<tor_messenger::crypto::EncryptedData>(data.clone()) {
+                Ok(ed) => ed,
+                Err(e) => {
+                    println!("⚠ [Flutter] Invalid encrypted data format from {}: {}", sender, e);
+                    return;
+                }
+            }
+        }
+        None => {
+            println!("⚠ [Flutter] Encrypted message missing 'data' field from {}", sender);
+            return;
+        }
+    };
+    
+    // Check if sender is a known contact, if not create one
+    let is_new_contact = {
+        let storage_guard = STORAGE.lock().ok();
+        let contact_exists = storage_guard.as_ref()
+            .and_then(|s| s.as_ref())
+            .and_then(|s| s.get_contact(&sender).ok())
+            .flatten()
+            .is_some();
+        
+        if !contact_exists {
+            println!("📱 [Flutter] New contact detected: {}", sender);
+            if let Ok(storage_guard) = STORAGE.lock() {
+                if let Some(storage) = storage_guard.as_ref() {
+                    let default_nickname = &sender[..std::cmp::min(16, sender.len())];
+                    let _ = storage.add_contact(&sender, Some(default_nickname), None);
+                    println!("✓ [Flutter] Created new contact for {}", sender);
+                }
+            }
+            true
+        } else {
+            false
+        }
+    };
+    
+    // Mark peer as online (we received a valid encrypted message)
+    if let Ok(mut pm) = PEER_MANAGER.lock() {
+        if let Some(ref mut peer_manager) = *pm {
+            peer_manager.mark_peer_online(&sender, None);
+        }
+    }
+    
+    // If it's a new contact, send a handshake back so they know we are online
+    if is_new_contact {
+        println!("👋 [Flutter] Sending handshake to new contact {}", sender);
+        let sender_clone = sender.clone();
+        std::thread::spawn(move || {
+            let _ = send_handshake_to_contact(sender_clone);
+        });
+    }
+    
+    // Decrypt the message using ECIES
     if let Ok(crypto_guard) = CRYPTO.lock() {
         if let Some(ref crypto) = *crypto_guard {
-            if let Ok(our_pk) = crypto.get_public_key_pem() {
-                let our_onion = get_onion_address();
-                // is_response = false because we are initiating
-                let handshake = MessageProtocol::create_handshake_message(&our_onion, &our_pk, false);
-                
-                if let Ok(json) = handshake.to_json() {
-                    let peer = peer_address.to_string();
-                    let json_clone = json.clone();
-                    std::thread::spawn(move || {
-                        let service_guard = TOR_SERVICE.lock().unwrap();
-                        if let Some(ref service) = *service_guard {
-                            match service.send_message(&peer, &json_clone) {
-                                Ok(_) => println!("✓ [Flutter] Handshake sent to {}", peer),
-                                Err(e) => println!("✗ [Flutter] Handshake failed to {}: {}", peer, e),
-                            }
+            match crypto.decrypt_message(&encrypted_data) {
+                Ok(decrypted_text) => {
+                    println!("← [Flutter ECIES] From {}: {}", sender, decrypted_text);
+                    
+                    // Save to storage
+                    if let Ok(storage_guard) = STORAGE.lock() {
+                        if let Some(storage) = storage_guard.as_ref() {
+                            let payload = serde_json::json!({"text": &decrypted_text});
+                            let _ = storage.save_message(
+                                &msg.id,
+                                "text",
+                                msg.sender_id.as_deref(),
+                                msg.recipient_id.as_deref(),
+                                &payload,
+                                msg.timestamp,
+                                false,
+                            );
                         }
-                    });
+                    }
+                    
+                    // Increment new message counter
+                    if let Ok(mut count) = NEW_MESSAGE_COUNT.lock() {
+                        *count += 1;
+                    }
+                }
+                Err(e) => {
+                    println!("✗ [Flutter] ECIES decryption error from {}: {}", sender, e);
                 }
             }
         }
@@ -380,38 +443,25 @@ fn handle_text_message(msg: &ProtocolMessage) {
         }
     };
     
-    // Check if sender is a known contact, if not create one and initiate handshake
-    let is_new_contact = {
-        let pm_guard = PEER_MANAGER.lock().ok();
+    // Check if sender is a known contact, if not create one
+    {
         let storage_guard = STORAGE.lock().ok();
-        
-        let has_public_key = pm_guard.as_ref()
-            .and_then(|pm| pm.as_ref())
-            .and_then(|pm| pm.get_peer_public_key(&sender))
-            .is_some();
-        
         let contact_exists = storage_guard.as_ref()
             .and_then(|s| s.as_ref())
             .and_then(|s| s.get_contact(&sender).ok())
+            .flatten()
             .is_some();
         
-        !has_public_key || !contact_exists
-    };
-    
-    if is_new_contact {
-        println!("📱 [Flutter] New contact detected: {}", sender);
-        
-        // Create contact in storage with sender address as nickname
-        if let Ok(storage_guard) = STORAGE.lock() {
-            if let Some(storage) = storage_guard.as_ref() {
-                let default_nickname = &sender[..std::cmp::min(16, sender.len())];
-                let _ = storage.add_contact(&sender, Some(default_nickname), None);
-                println!("✓ [Flutter] Created new contact for {}", sender);
+        if !contact_exists {
+            println!("📱 [Flutter] New contact detected: {}", sender);
+            if let Ok(storage_guard) = STORAGE.lock() {
+                if let Some(storage) = storage_guard.as_ref() {
+                    let default_nickname = &sender[..std::cmp::min(16, sender.len())];
+                    let _ = storage.add_contact(&sender, Some(default_nickname), None);
+                    println!("✓ [Flutter] Created new contact for {}", sender);
+                }
             }
         }
-        
-        // Initiate handshake to get their public key so we can reply
-        initiate_handshake(&sender);
     }
     
     // Decrypt the message
@@ -544,34 +594,21 @@ pub fn send_message(onion_address: String, message: String) -> anyhow::Result<bo
         let my_address = service.get_onion_address().unwrap_or_default();
         println!("[DEBUG] My address: {}", my_address);
         
-        // STRICT VALIDATION: Get recipient's public key - REQUIRED for encryption
-        let pm_guard = PEER_MANAGER.lock().unwrap();
-        let public_key = pm_guard.as_ref().and_then(|pm| pm.get_peer_public_key(&onion_address));
-        drop(pm_guard);
-        
-        println!("[DEBUG] Public key for recipient: {:?}", public_key.is_some());
-        
-        // STRICT: Public key is REQUIRED - no unencrypted messages allowed
-        let pk = public_key.ok_or_else(|| {
-            println!("[DEBUG] ERROR: No public key for recipient!");
-            anyhow::anyhow!("Cannot send message: No public key for recipient. Please exchange handshake first.")
-        })?;
-        
-        // STRICT: Crypto handler is REQUIRED
+        // ECIES: Encrypt using recipient's onion address (no public key exchange needed)
         let crypto_guard = CRYPTO.lock().unwrap();
         let crypto = crypto_guard.as_ref().ok_or_else(|| {
             println!("[DEBUG] ERROR: Crypto not initialized!");
             anyhow::anyhow!("Cannot send message: Crypto not initialized.")
         })?;
         
-        // STRICT: Encrypt the message - REQUIRED, no fallback to plaintext
-        let encrypted_data = crypto.encrypt_message(&message, &pk)
+        // ECIES encryption: derive recipient's X25519 public key from their onion address
+        let encrypted_data = crypto.encrypt_message(&message, &onion_address)
             .map_err(|e| {
-                println!("[DEBUG] ERROR: Encryption failed: {}", e);
+                println!("[DEBUG] ERROR: ECIES encryption failed: {}", e);
                 anyhow::anyhow!("Encryption failed: {}. Message NOT sent.", e)
             })?;
         
-        println!("[DEBUG] Message encrypted successfully");
+        println!("[DEBUG] Message encrypted with ECIES successfully");
         
         // Create encrypted protocol message with sender_id
         let msg = MessageProtocol::wrap_encrypted_message(
@@ -584,7 +621,6 @@ pub fn send_message(onion_address: String, message: String) -> anyhow::Result<bo
         let msg_json = msg.to_json().map_err(|e| anyhow::anyhow!(e.to_string()))?;
         
         println!("[DEBUG] Protocol message JSON length: {}", msg_json.len());
-        println!("[DEBUG] Protocol message (first 200 chars): {}", &msg_json[..std::cmp::min(200, msg_json.len())]);
         
         drop(crypto_guard);
         
@@ -605,7 +641,7 @@ pub fn send_message(onion_address: String, message: String) -> anyhow::Result<bo
         drop(storage_guard);
         
         // Send the encrypted protocol message
-        println!("[DEBUG] Sending message via Tor...");
+        println!("[DEBUG] Sending ECIES encrypted message via Tor...");
         let result = service.send_message(&onion_address, &msg_json);
         println!("[DEBUG] Send result: {:?}", result.is_ok());
         result.map_err(|e| anyhow::anyhow!(e.to_string()))
@@ -644,24 +680,18 @@ pub fn send_file(onion_address: String, file_path: String, file_type: String) ->
     if let Some(service) = service_guard.as_ref() {
         let my_address = service.get_onion_address().unwrap_or_default();
         
-        // Get recipient public key
-        let pm_guard = PEER_MANAGER.lock().unwrap();
-        let public_key = pm_guard.as_ref().and_then(|pm| pm.get_peer_public_key(&onion_address));
-        drop(pm_guard);
-        
-        let pk = public_key.ok_or_else(|| anyhow::anyhow!("No public key for recipient"))?;
-        
-        // Encrypt content (base64 string)
+        // ECIES: Encrypt using recipient's onion address (no public key exchange needed)
         let crypto_guard = CRYPTO.lock().unwrap();
         let crypto = crypto_guard.as_ref().ok_or_else(|| anyhow::anyhow!("Crypto not initialized"))?;
         
-        let encrypted_data = crypto.encrypt_message(&encoded, &pk)
-            .map_err(|e| anyhow::anyhow!("Encryption failed: {}", e))?;
+        // ECIES encryption: derive recipient's X25519 public key from their onion address
+        let encrypted_data = crypto.encrypt_message(&encoded, &onion_address)
+            .map_err(|e| anyhow::anyhow!("ECIES encryption failed: {}", e))?;
             
         drop(crypto_guard);
         
         // Wrap and send
-        let mut payload = std::collections::HashMap::new();
+        let mut payload = std::collections::BTreeMap::new();
         payload.insert("encrypted".to_string(), serde_json::Value::Bool(true));
         payload.insert("data".to_string(), serde_json::to_value(encrypted_data).unwrap());
         
@@ -731,6 +761,12 @@ pub fn get_contacts() -> anyhow::Result<Vec<ContactInfo>> {
 pub fn add_contact(onion_address: String, nickname: String) -> anyhow::Result<bool> {
     let storage_guard = STORAGE.lock().unwrap();
     if let Some(storage) = storage_guard.as_ref() {
+        // STRICT VALIDATION: Ensure it's a valid v3 onion address and we can derive a pubkey
+        if let Err(e) = tor_messenger::crypto::CryptoHandler::onion_to_pubkey(&onion_address) {
+            println!("⚠ [Flutter] Rejected invalid onion address: {} ({})", onion_address, e);
+            return Err(anyhow::anyhow!("Invalid onion address: {}", e));
+        }
+
         storage.add_contact(&onion_address, Some(&nickname), None)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         
@@ -749,18 +785,9 @@ pub fn add_contact(onion_address: String, nickname: String) -> anyhow::Result<bo
     }
 }
 
-/// Send a handshake message to a contact to exchange keys
+/// Send a handshake message to a contact (ECIES - no public key exchange needed)
 pub fn send_handshake_to_contact(onion_address: String) -> anyhow::Result<bool> {
-    println!("→ [Flutter] Sending handshake to: {}", onion_address);
-    
-    // Get our public key
-    let crypto_guard = CRYPTO.lock().unwrap();
-    let our_pk = match crypto_guard.as_ref() {
-        Some(crypto) => crypto.get_public_key_pem()
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?,
-        None => return Err(anyhow::anyhow!("Crypto not initialized")),
-    };
-    drop(crypto_guard);
+    println!("→ [Flutter ECIES] Sending handshake to: {}", onion_address);
     
     // Get our onion address
     let our_onion = get_onion_address();
@@ -768,8 +795,8 @@ pub fn send_handshake_to_contact(onion_address: String) -> anyhow::Result<bool> 
         return Err(anyhow::anyhow!("Tor not started"));
     }
     
-    // Create handshake message (is_response = false since we're initiating)
-    let handshake = MessageProtocol::create_handshake_message(&our_onion, &our_pk, false);
+    // Create handshake message - ECIES doesn't need public key exchange
+    let handshake = MessageProtocol::create_handshake_message(&our_onion, false);
     let json = handshake.to_json().map_err(|e| anyhow::anyhow!(e.to_string()))?;
     
     // Send via Tor
@@ -777,7 +804,7 @@ pub fn send_handshake_to_contact(onion_address: String) -> anyhow::Result<bool> 
     if let Some(service) = service_guard.as_ref() {
         match service.send_message(&onion_address, &json) {
             Ok(_) => {
-                println!("✓ [Flutter] Handshake sent to {}", onion_address);
+                println!("✓ [Flutter ECIES] Handshake sent to {}", onion_address);
                 Ok(true)
             }
             Err(e) => {

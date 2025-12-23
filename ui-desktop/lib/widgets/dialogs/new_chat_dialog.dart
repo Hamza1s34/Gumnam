@@ -69,13 +69,17 @@ class _NewChatDialogState extends State<NewChatDialog> with SingleTickerProvider
   }
 
   Future<void> _addContact() async {
-    if (_addressController.text.isEmpty) {
+    final rawAddress = _addressController.text.trim().toLowerCase();
+    
+    if (rawAddress.isEmpty) {
       setState(() => _error = 'Please enter an onion address');
       return;
     }
     
-    if (!_addressController.text.endsWith('.onion')) {
-      setState(() => _error = 'Invalid onion address format');
+    // v3 onion address: 56 chars + .onion (6 chars) = 62 chars
+    final onionRegex = RegExp(r'^[a-z2-7]{56}\.onion$');
+    if (!onionRegex.hasMatch(rawAddress)) {
+      setState(() => _error = 'Invalid v3 onion address format');
       return;
     }
 
@@ -86,12 +90,14 @@ class _NewChatDialogState extends State<NewChatDialog> with SingleTickerProvider
 
     try {
       final chatProvider = context.read<ChatProvider>();
+      // Use sanitized address
+      final onionAddress = rawAddress;
       // Use full address as nickname if empty to mark as "unsaved"
       final nickname = _nicknameController.text.isEmpty 
           ? _addressController.text
           : _nicknameController.text;
       
-      await chatProvider.addNewContact(_addressController.text, nickname);
+      await chatProvider.addNewContact(onionAddress, nickname);
       
       if (mounted) {
         Navigator.of(context).pop(true);

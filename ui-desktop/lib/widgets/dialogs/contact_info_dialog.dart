@@ -52,28 +52,6 @@ class _ContactInfoDialogState extends State<ContactInfoDialog> {
     );
   }
 
-  Future<void> _resendHandshake() async {
-    try {
-      await sendHandshakeToContact(onionAddress: widget.onionAddress);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Handshake sent successfully'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to send handshake: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -159,31 +137,13 @@ class _ContactInfoDialogState extends State<ContactInfoDialog> {
 
           const Divider(color: AppTheme.textSecondary, height: 24),
 
-          // Public Key
+          // Encryption Status (ECIES - No handshake needed)
           _buildInfoRow(
-            icon: Icons.key,
-            label: 'Public Key',
-            value: details.publicKey ?? 'Not exchanged yet',
-            isCopyable: details.publicKey != null,
-            onCopy: details.publicKey != null
-                ? () => _copyToClipboard(details.publicKey!, 'Public key')
-                : null,
-            isMultiline: true,
-            valueColor: details.publicKey != null ? AppTheme.textPrimary : Colors.orange,
+            icon: Icons.verified_user,
+            label: 'Encryption',
+            value: 'ECIES (Ed25519-X25519) - Secure',
+            valueColor: Colors.green,
           ),
-
-          if (details.publicKey == null) ...[
-            const SizedBox(height: 8),
-            ElevatedButton.icon(
-              onPressed: _resendHandshake,
-              icon: const Icon(Icons.handshake, size: 18),
-              label: const Text('Send Handshake'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.primaryPurple,
-                foregroundColor: Colors.white,
-              ),
-            ),
-          ],
 
           const Divider(color: AppTheme.textSecondary, height: 24),
 
