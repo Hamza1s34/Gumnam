@@ -9,9 +9,12 @@ use chacha20poly1305::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rand::RngCore;
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
-use x25519_dalek::{StaticSecret, PublicKey as XPublicKey}; // Assuming StaticSecret is available or will be found
+use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Verifier};
+use ed25519_dalek::hazmat::{ExpandedSecretKey, raw_sign};
+use x25519_dalek::{StaticSecret, PublicKey as XPublicKey};
 use curve25519_dalek::edwards::CompressedEdwardsY;
+use curve25519_dalek::scalar::Scalar;
+use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use hkdf::Hkdf;
 use sha2::{Sha256, Sha512, Digest};
 use serde::{Deserialize, Serialize};
@@ -42,6 +45,10 @@ pub struct EncryptedData {
 /// Handles encryption, decryption, and key management
 pub struct CryptoHandler {
     onion_signing_key: Option<SigningKey>,
+    /// Raw expanded secret key from Tor: first 32 bytes = clamped scalar, last 32 = hash right-half
+    raw_tor_expanded_key: Option<[u8; 64]>,
+    /// Verifying key derived from Tor's clamped scalar (scalar * G)
+    tor_verifying_key: Option<VerifyingKey>,
 }
 
 impl CryptoHandler {
@@ -49,19 +56,54 @@ impl CryptoHandler {
     pub fn new() -> Result<Self, CryptoError> {
         Ok(Self {
             onion_signing_key: None,
+            raw_tor_expanded_key: None,
+            tor_verifying_key: None,
         })
     }
 
-    /// Set the onion signing key (Ed25519) loaded from Tor
+    /// Set the onion signing key (Ed25519) loaded from Tor's expanded key file.
+    /// Tor's hs_ed25519_secret_key is 64 bytes: 32-byte clamped scalar `a` + 32-byte SHA512 right-half.
     pub fn set_onion_signing_key(&mut self, key_bytes: &[u8]) -> Result<(), CryptoError> {
         if key_bytes.len() != 64 {
-            return Err(CryptoError::Signature("Invalid Ed25519 secret key length".to_string()));
+            return Err(CryptoError::Signature("Invalid Tor Ed25519 expanded key length (expected 64)".to_string()));
         }
-        let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(&key_bytes[0..32]);
-        let signing_key = SigningKey::from_bytes(&bytes);
-        self.onion_signing_key = Some(signing_key);
+        
+        // Store the raw expanded key
+        let mut raw_key = [0u8; 64];
+        raw_key.copy_from_slice(key_bytes);
+        self.raw_tor_expanded_key = Some(raw_key);
+
+        // Compute the correct VerifyingKey from Tor's clamped scalar:
+        // PublicKey = scalar * G (Ed25519 base point)
+        let mut scalar_bytes = [0u8; 32];
+        scalar_bytes.copy_from_slice(&key_bytes[0..32]);
+        let scalar = Scalar::from_bytes_mod_order(scalar_bytes);
+        let public_point = &scalar * ED25519_BASEPOINT_TABLE;
+        let public_key_bytes = public_point.compress().to_bytes();
+        
+        self.tor_verifying_key = Some(
+            VerifyingKey::from_bytes(&public_key_bytes)
+                .map_err(|e| CryptoError::Signature(format!("Invalid public key: {}", e)))?
+        );
+        
+        // Also store a placeholder SigningKey (not used for actual signing)
+        let mut seed_bytes = [0u8; 32];
+        seed_bytes.copy_from_slice(&key_bytes[0..32]);
+        self.onion_signing_key = Some(SigningKey::from_bytes(&seed_bytes));
+        
         Ok(())
+    }
+    
+    /// Get the raw clamped scalar from Tor's expanded key for X25519
+    fn get_x25519_secret_from_tor_key(&self) -> Result<[u8; 32], CryptoError> {
+        let raw_key = self.raw_tor_expanded_key.as_ref()
+            .ok_or_else(|| CryptoError::Decryption("Tor key not loaded".to_string()))?;
+        
+        // The first 32 bytes of Tor's expanded key is the clamped scalar `a`.
+        // This is ALREADY properly clamped by Tor, so use it directly.
+        let mut scalar = [0u8; 32];
+        scalar.copy_from_slice(&raw_key[0..32]);
+        Ok(scalar)
     }
 
     /// Encrypt a message using ECIES
@@ -105,10 +147,9 @@ impl CryptoHandler {
 
     /// Decrypt a message using ECIES
     pub fn decrypt_message(&self, encrypted_data: &EncryptedData) -> Result<String, CryptoError> {
-        let signing_key = self.onion_signing_key.as_ref()
-            .ok_or_else(|| CryptoError::Decryption("Onion identity key not loaded".to_string()))?;
-
-        let our_x_sk = StaticSecret::from(Self::ed25519_sk_to_x25519(signing_key));
+        // Use the raw clamped scalar from Tor directly for X25519
+        let our_x_sk_bytes = self.get_x25519_secret_from_tor_key()?;
+        let our_x_sk = StaticSecret::from(our_x_sk_bytes);
 
         let ephem_pk_bytes = BASE64.decode(&encrypted_data.ephemeral_public_key)
             .map_err(|e| CryptoError::Decryption(e.to_string()))?;
@@ -167,10 +208,19 @@ impl CryptoHandler {
         x_sk
     }
 
+    /// Sign a message using Tor's raw expanded key via hazmat API
     pub fn sign_with_onion_key(&self, message: &str) -> Result<String, CryptoError> {
-        let key = self.onion_signing_key.as_ref()
-            .ok_or_else(|| CryptoError::Signature("Onion signing key not loaded".to_string()))?;
-        let signature = key.sign(message.as_bytes());
+        let raw_key = self.raw_tor_expanded_key.as_ref()
+            .ok_or_else(|| CryptoError::Signature("Tor key not loaded".to_string()))?;
+        
+        let expanded_key = ExpandedSecretKey::from_bytes(raw_key);
+        
+        // Use the correctly derived verifying key (scalar * G)
+        let verifying_key = self.tor_verifying_key.as_ref()
+            .ok_or_else(|| CryptoError::Signature("Verifying key not computed".to_string()))?;
+        
+        let signature = raw_sign::<Sha512>(&expanded_key, message.as_bytes(), verifying_key);
+        
         Ok(BASE64.encode(signature.to_bytes()))
     }
 
@@ -216,21 +266,33 @@ impl CryptoHandler {
 mod tests {
     use super::*;
 
-    /// Helper to generate a valid-looking but random v3 onion address for testing
-    fn generate_test_onion() -> (SigningKey, String) {
+    /// Generate a valid test onion address AND its properly expanded secret key
+    fn generate_test_onion() -> (SigningKey, String, [u8; 64]) {
         let mut rng = rand::thread_rng();
         let signing_key = SigningKey::generate(&mut rng);
         let pk = signing_key.verifying_key();
         
         let mut onion_bytes = [0u8; 35];
         onion_bytes[0..32].copy_from_slice(pk.as_bytes());
-        // Checksum (2 bytes) - In real Tor this is H(".onion checksum" || pubkey || version)
-        // For our onion_to_pubkey, we don't verify checksum yet, so 0 is fine.
         onion_bytes[34] = 0x03;
         
         let alphabet = base32::Alphabet::RFC4648 { padding: false };
         let onion = format!("{}.onion", base32::encode(alphabet, &onion_bytes).to_lowercase());
-        (signing_key, onion)
+        
+        // Create expanded key like Tor does: H(seed) = [clamped_scalar || rh]
+        let mut hasher = Sha512::new();
+        hasher.update(signing_key.to_bytes());
+        let hash = hasher.finalize();
+        
+        let mut expanded_key = [0u8; 64];
+        expanded_key.copy_from_slice(&hash);
+        
+        // Clamp the scalar (first 32 bytes)
+        expanded_key[0] &= 248;
+        expanded_key[31] &= 127;
+        expanded_key[31] |= 64;
+        
+        (signing_key, onion, expanded_key)
     }
 
     #[test]
@@ -238,20 +300,11 @@ mod tests {
         let mut crypto_sender = CryptoHandler::new().unwrap();
         let mut crypto_recipient = CryptoHandler::new().unwrap();
         
-        let (sender_sk, _) = generate_test_onion();
-        let (recipient_sk, recipient_onion) = generate_test_onion();
+        let (_, _, sender_expanded_key) = generate_test_onion();
+        let (_, recipient_onion, recipient_expanded_key) = generate_test_onion();
         
-        // set_onion_signing_key expects 64 bytes (secret + public)
-        let mut sender_key_bytes = [0u8; 64];
-        sender_key_bytes[0..32].copy_from_slice(&sender_sk.to_bytes());
-        sender_key_bytes[32..64].copy_from_slice(sender_sk.verifying_key().as_bytes());
-
-        let mut recipient_key_bytes = [0u8; 64];
-        recipient_key_bytes[0..32].copy_from_slice(&recipient_sk.to_bytes());
-        recipient_key_bytes[32..64].copy_from_slice(recipient_sk.verifying_key().as_bytes());
-        
-        crypto_sender.set_onion_signing_key(&sender_key_bytes).unwrap();
-        crypto_recipient.set_onion_signing_key(&recipient_key_bytes).unwrap();
+        crypto_sender.set_onion_signing_key(&sender_expanded_key).unwrap();
+        crypto_recipient.set_onion_signing_key(&recipient_expanded_key).unwrap();
         
         let message = "Hello, ECIES encryption!";
         let encrypted = crypto_sender.encrypt_message(message, &recipient_onion).unwrap();
@@ -263,12 +316,9 @@ mod tests {
     #[test]
     fn test_signature_verification() {
         let mut crypto = CryptoHandler::new().unwrap();
-        let (sk, onion) = generate_test_onion();
+        let (_, onion, expanded_key) = generate_test_onion();
         
-        let mut key_bytes = [0u8; 64];
-        key_bytes[0..32].copy_from_slice(&sk.to_bytes());
-        key_bytes[32..64].copy_from_slice(sk.verifying_key().as_bytes());
-        crypto.set_onion_signing_key(&key_bytes).unwrap();
+        crypto.set_onion_signing_key(&expanded_key).unwrap();
 
         let message = "This is a signed message authenticated by onion address";
         let signature_b64 = crypto.sign_with_onion_key(message).unwrap();
@@ -282,14 +332,14 @@ mod tests {
         assert!(!is_valid_wrong_msg);
 
         // Verify with wrong onion
-        let (_, wrong_onion) = generate_test_onion();
+        let (_, wrong_onion, _) = generate_test_onion();
         let is_valid_wrong_onion = crypto.verify_with_onion_address(message, &signature_b64, &wrong_onion).unwrap();
         assert!(!is_valid_wrong_onion);
     }
 
     #[test]
     fn test_onion_to_pubkey_conversion() {
-        let (_, valid_onion) = generate_test_onion();
+        let (_, valid_onion, _) = generate_test_onion();
         let res = CryptoHandler::onion_to_pubkey(&valid_onion);
         assert!(res.is_ok());
 
@@ -304,23 +354,29 @@ mod tests {
 
     #[test]
     fn test_key_conversion_consistency() {
-        // This test verifies that the public key derived from our converted secret key
-        // matches the public key derived from scaling the Ed25519 public key.
-        
         let mut rng = rand::thread_rng();
         let ed_sk = SigningKey::generate(&mut rng);
         let ed_pk = ed_sk.verifying_key();
         
-        // 1. Convert secret key to X25519 and get public key from it
-        let x_sk_bytes = CryptoHandler::ed25519_sk_to_x25519(&ed_sk);
-        let x_sk = StaticSecret::from(x_sk_bytes);
+        // 1. Convert seed to expanded key like Tor does
+        let mut hasher = Sha512::new();
+        hasher.update(ed_sk.to_bytes());
+        let hash = hasher.finalize();
+        let mut expanded_scalar = [0u8; 32];
+        expanded_scalar.copy_from_slice(&hash[0..32]);
+        expanded_scalar[0] &= 248;
+        expanded_scalar[31] &= 127;
+        expanded_scalar[31] |= 64;
+        
+        // Get X25519 public key from this clamped scalar
+        let x_sk = StaticSecret::from(expanded_scalar);
         let x_pk_from_sk = XPublicKey::from(&x_sk);
         
-        // 2. Convert public key directly to X25519
+        // 2. Convert Ed25519 public key directly to X25519
         let x_pk_from_pk_bytes = CryptoHandler::ed25519_pk_to_x25519(&ed_pk);
         let x_pk_from_pk = XPublicKey::from(x_pk_from_pk_bytes);
         
-        // They must be identical for ECIES to work across two parties!
+        // They must be identical for ECIES to work!
         assert_eq!(x_pk_from_sk.as_bytes(), x_pk_from_pk.as_bytes());
     }
 }
