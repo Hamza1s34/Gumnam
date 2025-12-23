@@ -17,8 +17,7 @@ pub const HIDDEN_SERVICE_PORT: u16 = 8080;
 /// External port (what users connect to via Tor)
 pub const HIDDEN_SERVICE_VIRTUAL_PORT: u16 = 80;
 
-/// RSA key size in bits
-pub const KEY_SIZE: u32 = 2048;
+// KEY_SIZE removed (RSA specific)
 
 /// Connection timeout in seconds
 pub const CONNECTION_TIMEOUT: u64 = 30;
@@ -55,15 +54,7 @@ pub fn key_dir() -> PathBuf {
     dir
 }
 
-/// Get path to private key file
-pub fn private_key_file() -> PathBuf {
-    key_dir().join("private_key.pem")
-}
-
-/// Get path to public key file
-pub fn public_key_file() -> PathBuf {
-    key_dir().join("public_key.pem")
-}
+// RSA key path functions removed
 
 /// Get path to SQLite database
 pub fn db_path() -> PathBuf {

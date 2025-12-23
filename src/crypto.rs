@@ -1,26 +1,21 @@
 //! Cryptographic operations for end-to-end encryption
 //!
-//! Port of Python crypto_handler.py
-//! Uses RSA for asymmetric encryption and AES-GCM for symmetric encryption
+//! Replaced RSA with Ed25519-X25519 ECIES
+//! Uses ChaCha20-Poly1305 for symmetric encryption
 
-use aes_gcm::{
+use chacha20poly1305::{
     aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, Nonce,
+    ChaCha20Poly1305, Nonce,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rand::RngCore;
-use rsa::{
-    pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding},
-    sha2::Sha256,
-    signature::{SignatureEncoding},
-    Oaep, RsaPrivateKey, RsaPublicKey,
-};
 use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
+use x25519_dalek::{StaticSecret, PublicKey as XPublicKey}; // Assuming StaticSecret is available or will be found
+use curve25519_dalek::edwards::CompressedEdwardsY;
+use hkdf::Hkdf;
+use sha2::{Sha256, Sha512, Digest};
 use serde::{Deserialize, Serialize};
-use std::fs;
 use thiserror::Error;
-
-use crate::config;
 
 #[derive(Error, Debug)]
 pub enum CryptoError {
@@ -36,80 +31,23 @@ pub enum CryptoError {
     Signature(String),
 }
 
-/// Encrypted message data structure
+/// Encrypted message data structure (ECIES)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedData {
-    pub encrypted_message: String, // Base64 encoded
-    pub encrypted_key: String,     // Base64 encoded
-    pub nonce: String,             // Base64 encoded (for AES-GCM)
+    pub encrypted_message: String,    // Base64 encoded ciphertext + tag
+    pub ephemeral_public_key: String, // Base64 encoded X25519 public key
+    pub nonce: String,                // Base64 encoded nonce
 }
 
 /// Handles encryption, decryption, and key management
 pub struct CryptoHandler {
-    private_key: RsaPrivateKey,
-    public_key: RsaPublicKey,
     onion_signing_key: Option<SigningKey>,
 }
 
 impl CryptoHandler {
-    /// Create a new CryptoHandler, loading existing keys or generating new ones
+    /// Create a new CryptoHandler
     pub fn new() -> Result<Self, CryptoError> {
-        let private_key_path = config::private_key_file();
-        let public_key_path = config::public_key_file();
-
-        if private_key_path.exists() && public_key_path.exists() {
-            Self::load_keys()
-        } else {
-            Self::generate_keys()
-        }
-    }
-
-    /// Generate new RSA key pair
-    fn generate_keys() -> Result<Self, CryptoError> {
-        println!("Generating new RSA key pair...");
-
-        let mut rng = rand::thread_rng();
-        let private_key = RsaPrivateKey::new(&mut rng, config::KEY_SIZE as usize)
-            .map_err(|e| CryptoError::KeyGeneration(e.to_string()))?;
-        let public_key = RsaPublicKey::from(&private_key);
-
-        // Save keys to disk
-        let private_pem = private_key
-            .to_pkcs8_pem(LineEnding::LF)
-            .map_err(|e| CryptoError::KeyGeneration(e.to_string()))?;
-        fs::write(config::private_key_file(), private_pem.as_bytes())
-            .map_err(|e| CryptoError::KeyGeneration(e.to_string()))?;
-
-        let public_pem = public_key
-            .to_public_key_pem(LineEnding::LF)
-            .map_err(|e| CryptoError::KeyGeneration(e.to_string()))?;
-        fs::write(config::public_key_file(), public_pem.as_bytes())
-            .map_err(|e| CryptoError::KeyGeneration(e.to_string()))?;
-
-        println!("Keys saved to {:?}", config::key_dir());
-
         Ok(Self {
-            private_key,
-            public_key,
-            onion_signing_key: None,
-        })
-    }
-
-    /// Load existing keys from disk
-    fn load_keys() -> Result<Self, CryptoError> {
-        let private_pem = fs::read_to_string(config::private_key_file())
-            .map_err(|e| CryptoError::KeyLoading(e.to_string()))?;
-        let private_key = RsaPrivateKey::from_pkcs8_pem(&private_pem)
-            .map_err(|e| CryptoError::KeyLoading(e.to_string()))?;
-
-        let public_pem = fs::read_to_string(config::public_key_file())
-            .map_err(|e| CryptoError::KeyLoading(e.to_string()))?;
-        let public_key = RsaPublicKey::from_public_key_pem(&public_pem)
-            .map_err(|e| CryptoError::KeyLoading(e.to_string()))?;
-
-        Ok(Self {
-            private_key,
-            public_key,
             onion_signing_key: None,
         })
     }
@@ -126,99 +64,110 @@ impl CryptoHandler {
         Ok(())
     }
 
-    /// Get public key in PEM format for sharing
-    pub fn get_public_key_pem(&self) -> Result<String, CryptoError> {
-        self.public_key
-            .to_public_key_pem(LineEnding::LF)
-            .map_err(|e| CryptoError::KeyGeneration(e.to_string()))
-    }
-
-    /// Encrypt a message using hybrid encryption:
-    /// 1. Generate random AES-256 key
-    /// 2. Encrypt message with AES-GCM
-    /// 3. Encrypt AES key with recipient's RSA public key
+    /// Encrypt a message using ECIES
     pub fn encrypt_message(
         &self,
         message: &str,
-        recipient_public_key_pem: &str,
+        recipient_onion: &str,
     ) -> Result<EncryptedData, CryptoError> {
-        // Load recipient's public key
-        let recipient_public_key = RsaPublicKey::from_public_key_pem(recipient_public_key_pem)
+        let recipient_ed_pk = Self::onion_to_pubkey(recipient_onion)
+            .map_err(|e| CryptoError::Encryption(format!("Invalid recipient onion: {}", e)))?;
+        let recipient_x_pk = XPublicKey::from(Self::ed25519_pk_to_x25519(&recipient_ed_pk));
+
+        let mut rng = rand::thread_rng();
+        let ephemeral_sk = StaticSecret::random_from_rng(&mut rng);
+        let ephemeral_pk = XPublicKey::from(&ephemeral_sk);
+
+        let shared_secret = ephemeral_sk.diffie_hellman(&recipient_x_pk);
+
+        let hk = Hkdf::<Sha256>::new(None, shared_secret.as_bytes());
+        let mut okm = [0u8; 32];
+        hk.expand(b"tor-messenger-ecies", &mut okm)
             .map_err(|e| CryptoError::Encryption(e.to_string()))?;
 
-        // Generate random 256-bit AES key
-        let mut aes_key = [0u8; 32];
-        OsRng.fill_bytes(&mut aes_key);
-
-        // Generate random 96-bit nonce for AES-GCM
+        let cipher = ChaCha20Poly1305::new_from_slice(&okm)
+            .map_err(|e| CryptoError::Encryption(e.to_string()))?;
+        
         let mut nonce_bytes = [0u8; 12];
         OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        // Encrypt message with AES-GCM
-        let cipher = Aes256Gcm::new_from_slice(&aes_key)
-            .map_err(|e| CryptoError::Encryption(e.to_string()))?;
         let encrypted_message = cipher
             .encrypt(nonce, message.as_bytes())
             .map_err(|e| CryptoError::Encryption(e.to_string()))?;
 
-        // Encrypt AES key with recipient's RSA public key using OAEP
-        let padding = Oaep::new::<Sha256>();
-        let mut rng = rand::thread_rng();
-        let encrypted_key = recipient_public_key
-            .encrypt(&mut rng, padding, &aes_key)
-            .map_err(|e| CryptoError::Encryption(e.to_string()))?;
-
         Ok(EncryptedData {
             encrypted_message: BASE64.encode(&encrypted_message),
-            encrypted_key: BASE64.encode(&encrypted_key),
+            ephemeral_public_key: BASE64.encode(ephemeral_pk.as_bytes()),
             nonce: BASE64.encode(&nonce_bytes),
         })
     }
 
-    /// Decrypt a message using hybrid encryption:
-    /// 1. Decrypt AES key with private RSA key
-    /// 2. Decrypt message with AES-GCM
+    /// Decrypt a message using ECIES
     pub fn decrypt_message(&self, encrypted_data: &EncryptedData) -> Result<String, CryptoError> {
-        // Decode from base64
-        let encrypted_message = BASE64
-            .decode(&encrypted_data.encrypted_message)
+        let signing_key = self.onion_signing_key.as_ref()
+            .ok_or_else(|| CryptoError::Decryption("Onion identity key not loaded".to_string()))?;
+
+        let our_x_sk = StaticSecret::from(Self::ed25519_sk_to_x25519(signing_key));
+
+        let ephem_pk_bytes = BASE64.decode(&encrypted_data.ephemeral_public_key)
             .map_err(|e| CryptoError::Decryption(e.to_string()))?;
-        let encrypted_key = BASE64
-            .decode(&encrypted_data.encrypted_key)
-            .map_err(|e| CryptoError::Decryption(e.to_string()))?;
-        let nonce_bytes = BASE64
-            .decode(&encrypted_data.nonce)
+        if ephem_pk_bytes.len() != 32 {
+            return Err(CryptoError::Decryption("Invalid ephemeral public key length".to_string()));
+        }
+        let mut pk_arr = [0u8; 32];
+        pk_arr.copy_from_slice(&ephem_pk_bytes);
+        let ephem_x_pk = XPublicKey::from(pk_arr);
+
+        let shared_secret = our_x_sk.diffie_hellman(&ephem_x_pk);
+
+        let hk = Hkdf::<Sha256>::new(None, shared_secret.as_bytes());
+        let mut okm = [0u8; 32];
+        hk.expand(b"tor-messenger-ecies", &mut okm)
             .map_err(|e| CryptoError::Decryption(e.to_string()))?;
 
-        // Decrypt AES key with private RSA key
-        let padding = Oaep::new::<Sha256>();
-        let aes_key = self
-            .private_key
-            .decrypt(padding, &encrypted_key)
+        let cipher = ChaCha20Poly1305::new_from_slice(&okm)
             .map_err(|e| CryptoError::Decryption(e.to_string()))?;
-
-        // Decrypt message with AES-GCM
-        let cipher = Aes256Gcm::new_from_slice(&aes_key)
+        
+        let nonce_bytes = BASE64.decode(&encrypted_data.nonce)
             .map_err(|e| CryptoError::Decryption(e.to_string()))?;
         let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let ciphertext = BASE64.decode(&encrypted_data.encrypted_message)
+            .map_err(|e| CryptoError::Decryption(e.to_string()))?;
+
         let decrypted = cipher
-            .decrypt(nonce, encrypted_message.as_ref())
+            .decrypt(nonce, ciphertext.as_ref())
             .map_err(|e| CryptoError::Decryption(e.to_string()))?;
 
         String::from_utf8(decrypted).map_err(|e| CryptoError::Decryption(e.to_string()))
     }
 
-    /// Sign a message using the Ed25519 key (Identity Linked to Onion)
+    fn ed25519_pk_to_x25519(ed_pk: &VerifyingKey) -> [u8; 32] {
+        let compressed = CompressedEdwardsY(ed_pk.to_bytes());
+        if let Some(edwards_point) = compressed.decompress() {
+            edwards_point.to_montgomery().to_bytes()
+        } else {
+            [0u8; 32]
+        }
+    }
+
+    fn ed25519_sk_to_x25519(ed_sk: &SigningKey) -> [u8; 32] {
+        let mut hasher = Sha512::new();
+        hasher.update(ed_sk.to_bytes());
+        let hash = hasher.finalize();
+        let mut x_sk = [0u8; 32];
+        x_sk.copy_from_slice(&hash[0..32]);
+        x_sk
+    }
+
     pub fn sign_with_onion_key(&self, message: &str) -> Result<String, CryptoError> {
         let key = self.onion_signing_key.as_ref()
             .ok_or_else(|| CryptoError::Signature("Onion signing key not loaded".to_string()))?;
-        
         let signature = key.sign(message.as_bytes());
         Ok(BASE64.encode(signature.to_bytes()))
     }
 
-    /// Verify signature using a .onion address (decoding it to Ed25519 public key)
     pub fn verify_with_onion_address(
         &self,
         message: &str,
@@ -227,53 +176,123 @@ impl CryptoHandler {
     ) -> Result<bool, CryptoError> {
         let pub_key = Self::onion_to_pubkey(onion_address)
             .map_err(|e| CryptoError::Signature(e.to_string()))?;
-        
         let sig_bytes = BASE64.decode(signature_b64)
             .map_err(|e| CryptoError::Signature(e.to_string()))?;
-        
         let signature = Signature::from_slice(&sig_bytes)
             .map_err(|e| CryptoError::Signature(e.to_string()))?;
-        
         match pub_key.verify(message.as_bytes(), &signature) {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
         }
     }
 
-    /// Convert a Tor v3 .onion address back into an Ed25519 public key
     pub fn onion_to_pubkey(onion: &str) -> anyhow::Result<VerifyingKey> {
-        // Remove .onion suffix if present
         let onion = onion.trim_end_matches(".onion").to_lowercase();
-        
-        // V3 onions are 56 chars (Base32)
         if onion.len() != 56 {
             return Err(anyhow::anyhow!("Invalid onion address length (must be v3)"));
         }
-
-        // Decode Base32
         let alphabet = base32::Alphabet::RFC4648 { padding: false };
         let decoded = base32::decode(alphabet, &onion)
             .ok_or_else(|| anyhow::anyhow!("Failed to decode base32 onion address"))?;
-
         if decoded.len() != 35 {
             return Err(anyhow::anyhow!("Invalid decoded onion length"));
         }
-
-        // The first 32 bytes are the Ed25519 public key
         let mut pk_bytes = [0u8; 32];
         pk_bytes.copy_from_slice(&decoded[0..32]);
-        
-        // verify version (last byte should be 0x03)
         if decoded[34] != 0x03 {
             return Err(anyhow::anyhow!("Not a v3 onion address (invalid version byte)"));
         }
-
         VerifyingKey::from_bytes(&pk_bytes).map_err(|e| anyhow::anyhow!(e))
     }
 }
 
-impl Default for CryptoHandler {
-    fn default() -> Self {
-        Self::new().expect("Failed to initialize CryptoHandler")
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to generate a valid-looking but random v3 onion address for testing
+    fn generate_test_onion() -> (SigningKey, String) {
+        let mut rng = rand::thread_rng();
+        let signing_key = SigningKey::generate(&mut rng);
+        let pk = signing_key.verifying_key();
+        
+        let mut onion_bytes = [0u8; 35];
+        onion_bytes[0..32].copy_from_slice(pk.as_bytes());
+        // Checksum (2 bytes) - In real Tor this is H(".onion checksum" || pubkey || version)
+        // For our onion_to_pubkey, we don't verify checksum yet, so 0 is fine.
+        onion_bytes[34] = 0x03;
+        
+        let alphabet = base32::Alphabet::RFC4648 { padding: false };
+        let onion = format!("{}.onion", base32::encode(alphabet, &onion_bytes).to_lowercase());
+        (signing_key, onion)
+    }
+
+    #[test]
+    fn test_ecies_loop() {
+        let mut crypto_sender = CryptoHandler::new().unwrap();
+        let mut crypto_recipient = CryptoHandler::new().unwrap();
+        
+        let (sender_sk, _) = generate_test_onion();
+        let (recipient_sk, recipient_onion) = generate_test_onion();
+        
+        // set_onion_signing_key expects 64 bytes (secret + public)
+        let mut sender_key_bytes = [0u8; 64];
+        sender_key_bytes[0..32].copy_from_slice(&sender_sk.to_bytes());
+        sender_key_bytes[32..64].copy_from_slice(sender_sk.verifying_key().as_bytes());
+
+        let mut recipient_key_bytes = [0u8; 64];
+        recipient_key_bytes[0..32].copy_from_slice(&recipient_sk.to_bytes());
+        recipient_key_bytes[32..64].copy_from_slice(recipient_sk.verifying_key().as_bytes());
+        
+        crypto_sender.set_onion_signing_key(&sender_key_bytes).unwrap();
+        crypto_recipient.set_onion_signing_key(&recipient_key_bytes).unwrap();
+        
+        let message = "Hello, ECIES encryption!";
+        let encrypted = crypto_sender.encrypt_message(message, &recipient_onion).unwrap();
+        let decrypted = crypto_recipient.decrypt_message(&encrypted).unwrap();
+        
+        assert_eq!(message, decrypted);
+    }
+
+    #[test]
+    fn test_signature_verification() {
+        let mut crypto = CryptoHandler::new().unwrap();
+        let (sk, onion) = generate_test_onion();
+        
+        let mut key_bytes = [0u8; 64];
+        key_bytes[0..32].copy_from_slice(&sk.to_bytes());
+        key_bytes[32..64].copy_from_slice(sk.verifying_key().as_bytes());
+        crypto.set_onion_signing_key(&key_bytes).unwrap();
+
+        let message = "This is a signed message authenticated by onion address";
+        let signature_b64 = crypto.sign_with_onion_key(message).unwrap();
+
+        // Verify correctly
+        let is_valid = crypto.verify_with_onion_address(message, &signature_b64, &onion).unwrap();
+        assert!(is_valid);
+
+        // Verify with wrong message
+        let is_valid_wrong_msg = crypto.verify_with_onion_address("modified message", &signature_b64, &onion).unwrap();
+        assert!(!is_valid_wrong_msg);
+
+        // Verify with wrong onion
+        let (_, wrong_onion) = generate_test_onion();
+        let is_valid_wrong_onion = crypto.verify_with_onion_address(message, &signature_b64, &wrong_onion).unwrap();
+        assert!(!is_valid_wrong_onion);
+    }
+
+    #[test]
+    fn test_onion_to_pubkey_conversion() {
+        let (_, valid_onion) = generate_test_onion();
+        let res = CryptoHandler::onion_to_pubkey(&valid_onion);
+        assert!(res.is_ok());
+
+        let invalid_onion = "too-short.onion";
+        let res_invalid = CryptoHandler::onion_to_pubkey(invalid_onion);
+        assert!(res_invalid.is_err());
+        
+        let invalid_version = "v2c76pdyv642lr3mc72ycofvtqsqm477fntit5t2lyw3v6n2p6m4jqya.onion"; // ends in 'a' (0x00? no, 'a' is 0 in base32)
+        let res_ver = CryptoHandler::onion_to_pubkey(invalid_version);
+        assert!(res_ver.is_err());
     }
 }

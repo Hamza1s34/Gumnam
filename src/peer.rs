@@ -112,13 +112,6 @@ impl PeerManager {
         self.active_connections.keys().cloned().collect()
     }
 
-    /// Get peer's public key
-    pub fn get_peer_public_key(&self, onion_address: &str) -> Option<String> {
-        if let Ok(storage) = self.storage.lock() {
-            if let Ok(Some(peer)) = storage.get_contact(onion_address) {
-                return peer.public_key;
-            }
-        }
-        None
-    }
+    // Public keys are now derived from onion addresses directly.
+    // get_peer_public_key removed.
 }

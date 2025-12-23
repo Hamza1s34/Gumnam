@@ -132,7 +132,7 @@ pub fn run_cli() {
                                             // 3. VERIFY Signature (Proof of Identity)
                                             let mut is_verified = false;
                                             if let Ok(c) = crypto_fetch.lock() {
-                                                is_verified = MessageProtocol::verify_message(&msg, "", &c);
+                                                is_verified = MessageProtocol::verify_message(&msg, &c);
                                             }
 
                                             if !is_verified {
@@ -246,9 +246,7 @@ pub fn run_cli() {
                 // Stop Tor first
                 tor_service.stop();
                 
-                // Delete keys and other files
-                let _ = std::fs::remove_file(crate::config::private_key_file());
-                let _ = std::fs::remove_file(crate::config::public_key_file());
+                // Delete database
                 let _ = std::fs::remove_file(crate::config::db_path());
                 
                 println!("[✓] All data wiped. Exiting.");
@@ -263,10 +261,9 @@ pub fn run_cli() {
 
             // Check if adding self
             if addr == onion_address {
-                println!("[!] That's your own address. Storing your public key for testing...");
-                let my_pk = crypto.lock().unwrap().get_public_key_pem().unwrap_or_default();
+                println!("[!] That's your own address. Skipping public key storage (onion identity is sufficient).");
                 if let Ok(pm) = peer_manager.lock() {
-                    match pm.add_peer(addr, nickname, Some(&my_pk)) {
+                    match pm.add_peer(addr, nickname, None) {
                         Ok(_) => println!("[✓] Added yourself as contact (for testing)"),
                         Err(e) => println!("[✗] Error: {}", e),
                     }
@@ -280,8 +277,7 @@ pub fn run_cli() {
                         println!("[✓] Added contact: {}", addr);
                         
                         // Send initial handshake (is_response = false)
-                        let pk = crypto.lock().unwrap().get_public_key_pem().unwrap_or_default();
-                        let mut handshake = MessageProtocol::create_handshake_message(&onion_address, &pk, false);
+                        let mut handshake = MessageProtocol::create_handshake_message(&onion_address, false);
                         
                         // Sign the handshake
                         if let Ok(c) = crypto.lock() {
@@ -325,11 +321,8 @@ pub fn run_cli() {
             let recipient = parts[0].trim();
             let message = parts[1].trim();
 
-            // Get recipient's public key
-            let public_key = peer_manager.lock().unwrap().get_peer_public_key(recipient);
-
-            if let Some(pk) = public_key {
-                let encrypt_result = crypto.lock().unwrap().encrypt_message(message, &pk);
+            if true { // We always have the recipient's onion address
+                let encrypt_result = crypto.lock().unwrap().encrypt_message(message, recipient);
                 
                 match encrypt_result {
                     Ok(encrypted_data) => {
@@ -371,13 +364,12 @@ pub fn run_cli() {
                                         println!("[✗] Peer offline, uploading to IPFS... ({})", e);
                                         // Fallback to IPFS
                                         let crypto_ipfs = Arc::clone(&crypto_send);
-                                        let peer_pk = pk.clone(); // Public key of recipient
                                         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
                                         rt.block_on(async {
                                             let crypto_snf = crypto_ipfs.lock().unwrap();
-                                            match SnFManager::upload_and_announce(
-                                                &peer, &peer_pk, &sender, &encrypted_data, &crypto_snf
-                                            ).await {
+                                             match SnFManager::upload_and_announce(
+                                                 &peer, &sender, &encrypted_data, &crypto_snf
+                                             ).await {
                                                 Ok(cid) => println!("[✓] Message pinned & announced to DHT. CID: {}", cid),
                                                 Err(e) => println!("[✗] IPFS backup failed: {}", e),
                                             }
@@ -491,8 +483,7 @@ fn handle_incoming_message(
                 println!("\n[✓] Handshake from: {} (key saved)", sender_id);
                 
                 // Send response handshake
-                let our_pk = crypto.lock().unwrap().get_public_key_pem().unwrap_or_default();
-                let mut response_handshake = MessageProtocol::create_handshake_message(our_onion_address, &our_pk, true);
+                let mut response_handshake = MessageProtocol::create_handshake_message(our_onion_address, true);
                 
                 // Sign the handshake
                 if let Ok(c) = crypto.lock() {
@@ -523,7 +514,7 @@ fn handle_incoming_message(
             // 3. VERIFY Signature (Proof of Identity)
             let mut is_verified = false;
             if let Ok(c) = crypto.lock() {
-                is_verified = MessageProtocol::verify_message(&msg, "", &c);
+                is_verified = MessageProtocol::verify_message(&msg, &c);
             }
 
             if !is_verified {

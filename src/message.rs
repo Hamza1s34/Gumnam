@@ -105,17 +105,13 @@ impl MessageProtocol {
         )
     }
 
-    /// Create a handshake message with public key
+    /// Create a handshake message
     /// is_response: true if this is a response to a received handshake, false if initiating
-    pub fn create_handshake_message(sender_id: &str, public_key: &str, is_response: bool) -> Message {
+    pub fn create_handshake_message(sender_id: &str, is_response: bool) -> Message {
         let mut payload = HashMap::new();
         payload.insert(
-            "public_key".to_string(),
-            serde_json::Value::String(public_key.to_string()),
-        );
-        payload.insert(
             "protocol_version".to_string(),
-            serde_json::Value::String("1.0".to_string()),
+            serde_json::Value::String("2.0".to_string()), // Upgraded protocol version
         );
         payload.insert(
             "is_response".to_string(),
@@ -182,7 +178,6 @@ impl MessageProtocol {
     /// Verify a message signature using the sender's onion address
     pub fn verify_message(
         msg: &Message,
-        _unused_pk_pem: &str, // Signature is now checked against onion address directly
         crypto: &crate::crypto::CryptoHandler,
     ) -> bool {
         let signature = match &msg.signature {
@@ -225,7 +220,7 @@ impl MessageProtocol {
         }
 
         // Check version compatibility
-        if msg.version != "1.0" {
+        if msg.version != "1.0" && msg.version != "2.0" {
             return false;
         }
 
