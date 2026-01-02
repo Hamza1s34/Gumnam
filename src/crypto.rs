@@ -114,7 +114,8 @@ impl CryptoHandler {
     ) -> Result<EncryptedData, CryptoError> {
         let recipient_ed_pk = Self::onion_to_pubkey(recipient_onion)
             .map_err(|e| CryptoError::Encryption(format!("Invalid recipient onion: {}", e)))?;
-        let recipient_x_pk = XPublicKey::from(Self::ed25519_pk_to_x25519(&recipient_ed_pk));
+        let recipient_x_pk_bytes = Self::ed25519_pk_to_x25519(&recipient_ed_pk)?;
+        let recipient_x_pk = XPublicKey::from(recipient_x_pk_bytes);
 
         let mut rng = rand::thread_rng();
         let ephemeral_sk = StaticSecret::random_from_rng(&mut rng);
@@ -184,13 +185,13 @@ impl CryptoHandler {
         String::from_utf8(decrypted).map_err(|e| CryptoError::Decryption(e.to_string()))
     }
 
-    fn ed25519_pk_to_x25519(ed_pk: &VerifyingKey) -> [u8; 32] {
+    fn ed25519_pk_to_x25519(ed_pk: &VerifyingKey) -> Result<[u8; 32], CryptoError> {
         let compressed = CompressedEdwardsY(ed_pk.to_bytes());
-        if let Some(edwards_point) = compressed.decompress() {
-            edwards_point.to_montgomery().to_bytes()
-        } else {
-            [0u8; 32]
-        }
+        compressed.decompress()
+            .map(|edwards_point| edwards_point.to_montgomery().to_bytes())
+            .ok_or_else(|| CryptoError::KeyLoading(
+                "Invalid Ed25519 public key: failed to decompress curve point".to_string()
+            ))
     }
 
     fn ed25519_sk_to_x25519(ed_sk: &SigningKey) -> [u8; 32] {

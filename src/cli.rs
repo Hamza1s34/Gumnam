@@ -504,17 +504,20 @@ fn handle_incoming_message(
         MessageType::Text | MessageType::Encrypted => {
             let sender = msg.sender_id.as_ref().unwrap();
             
-            // 3. VERIFY Signature (Proof of Identity)
-            let mut is_verified = false;
-            if let Ok(c) = crypto.lock() {
-                is_verified = MessageProtocol::verify_message(&msg, &c);
-            }
-
-            if is_verified {
-                println!("\n[✓ SIGNATURE VERIFIED] Message from {} is authentic.", sender);
+            // STRICT: VERIFY Signature (Proof of Identity) - REJECT if fails
+            let is_verified = if let Ok(c) = crypto.lock() {
+                MessageProtocol::verify_message(&msg, &c)
             } else {
-                println!("\n[⚠ SIGNATURE FAILED] Could not verify message from {}. It may be faked!", sender);
+                false
+            };
+
+            if !is_verified {
+                println!("\n[✗ SIGNATURE REJECTED] Message from {} has invalid/missing signature. REJECTED!", sender);
+                print!("> ");
+                io::stdout().flush().ok();
+                return;
             }
+            println!("\n[✓ SIGNATURE VERIFIED] Message from {} is authentic.", sender);
 
             // STRICT: Text messages MUST be encrypted
             if msg.payload.get("encrypted").and_then(|v| v.as_bool()) != Some(true) {

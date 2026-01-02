@@ -417,19 +417,22 @@ fn handle_encrypted_message(msg: &ProtocolMessage) {
         }
     }
     
-    // Verify signature (Proof of Identity) - like CLI does
-    let mut is_verified = false;
-    if let Ok(crypto_guard) = CRYPTO.lock() {
+    // STRICT: Verify signature (Proof of Identity) - REJECT if fails
+    let is_verified = if let Ok(crypto_guard) = CRYPTO.lock() {
         if let Some(ref crypto) = *crypto_guard {
-            is_verified = MessageProtocol::verify_message(msg, crypto);
+            MessageProtocol::verify_message(msg, crypto)
+        } else {
+            false
         }
-    }
-    
-    if is_verified {
-        println!("[✓ SIGNATURE VERIFIED] Message from {} is authentic.", sender);
     } else {
-        println!("[⚠ SIGNATURE FAILED] Could not verify message from {}. It may be faked!", sender);
+        false
+    };
+    
+    if !is_verified {
+        println!("[✗ SIGNATURE REJECTED] Message from {} has invalid/missing signature. REJECTED!", sender);
+        return;
     }
+    println!("[✓ SIGNATURE VERIFIED] Message from {} is authentic.", sender);
     
     // If it's a new contact, send a handshake back IMMEDIATELY (non-blocking)
     // This must happen BEFORE decryption to avoid blocking the sender
@@ -493,6 +496,23 @@ fn handle_encrypted_message(msg: &ProtocolMessage) {
 fn handle_text_message(msg: &ProtocolMessage) {
     // sender_id is guaranteed to exist (checked in handle_incoming_message)
     let sender = msg.sender_id.as_ref().unwrap().clone();
+    
+    // STRICT: Verify signature - REJECT if fails
+    let is_verified = if let Ok(crypto_guard) = CRYPTO.lock() {
+        if let Some(ref crypto) = *crypto_guard {
+            MessageProtocol::verify_message(msg, crypto)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    
+    if !is_verified {
+        println!("[✗ SIGNATURE REJECTED] Text message from {} has invalid/missing signature. REJECTED!", sender);
+        return;
+    }
+    println!("[✓ SIGNATURE VERIFIED] Text message from {} is authentic.", sender);
     
     // STRICT: encrypted flag already verified in handle_incoming_message
     // STRICT: Must have data field
@@ -583,6 +603,23 @@ fn handle_text_message(msg: &ProtocolMessage) {
 /// Handle encrypted file/media messages
 fn handle_file_message(msg: &ProtocolMessage) {
     let sender = msg.sender_id.as_ref().unwrap().clone();
+    
+    // STRICT: Verify signature - REJECT if fails
+    let is_verified = if let Ok(crypto_guard) = CRYPTO.lock() {
+        if let Some(ref crypto) = *crypto_guard {
+            MessageProtocol::verify_message(msg, crypto)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    
+    if !is_verified {
+        println!("[✗ SIGNATURE REJECTED] File message from {} has invalid/missing signature. REJECTED!", sender);
+        return;
+    }
+    println!("[✓ SIGNATURE VERIFIED] File message from {} is authentic.", sender);
     
     // Strict: Must have data field
     let data = match msg.payload.get("data") {
