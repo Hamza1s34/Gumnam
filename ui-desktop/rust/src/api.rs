@@ -84,6 +84,10 @@ pub fn start_tor() -> anyhow::Result<String> {
     }
     drop(storage_guard);
     
+    // Fix any existing contacts with bad nicknames
+    println!("[*] Checking and fixing contact nicknames...");
+    let _ = fix_contact_nicknames();
+    
     // Initialize crypto
     let mut crypto_guard = CRYPTO.lock().unwrap();
     if crypto_guard.is_none() {
@@ -117,6 +121,23 @@ pub fn start_tor() -> anyhow::Result<String> {
     
     let service = service_guard.as_ref().unwrap();
     let onion = service.get_onion_address().unwrap_or_default();
+    
+    // Load the Ed25519 identity key from Tor for signing and ECIES decryption
+    println!("[*] Loading onion identity key for signatures and decryption...");
+    match service.get_onion_secret_key() {
+        Ok(key_bytes) => {
+            if let Ok(mut c) = CRYPTO.lock() {
+                if let Some(ref mut crypto) = *c {
+                    if let Err(e) = crypto.set_onion_signing_key(&key_bytes) {
+                        println!("[!] Warning: Failed to load onion identity key: {}", e);
+                    } else {
+                        println!("[✓] Identity linked to onion address! Signatures and ECIES ready.");
+                    }
+                }
+            }
+        }
+        Err(e) => println!("[!] Warning: Could not load onion identity key: {}", e),
+    }
     
     Ok(onion)
 }
@@ -396,6 +417,20 @@ fn handle_encrypted_message(msg: &ProtocolMessage) {
         }
     }
     
+    // Verify signature (Proof of Identity) - like CLI does
+    let mut is_verified = false;
+    if let Ok(crypto_guard) = CRYPTO.lock() {
+        if let Some(ref crypto) = *crypto_guard {
+            is_verified = MessageProtocol::verify_message(msg, crypto);
+        }
+    }
+    
+    if is_verified {
+        println!("[✓ SIGNATURE VERIFIED] Message from {} is authentic.", sender);
+    } else {
+        println!("[⚠ SIGNATURE FAILED] Could not verify message from {}. It may be faked!", sender);
+    }
+    
     // If it's a new contact, send a handshake back IMMEDIATELY (non-blocking)
     // This must happen BEFORE decryption to avoid blocking the sender
     if is_new_contact {
@@ -414,15 +449,18 @@ fn handle_encrypted_message(msg: &ProtocolMessage) {
     // Decrypt the message using ECIES
     if let Ok(crypto_guard) = CRYPTO.lock() {
         if let Some(ref crypto) = *crypto_guard {
+            println!("[DEBUG Flutter] Attempting ECIES decryption from {}", sender);
             match crypto.decrypt_message(&encrypted_data) {
                 Ok(decrypted_text) => {
-                    println!("← [Flutter ECIES] From {}: {}", sender, decrypted_text);
+                    println!("\n[✓ DECRYPTED] Message from {}: {}", sender, decrypted_text);
+                    println!("[DEBUG] Message ID: {}", msg.id);
+                    println!("[DEBUG] Timestamp: {}", msg.timestamp);
                     
                     // Save to storage
                     if let Ok(storage_guard) = STORAGE.lock() {
                         if let Some(storage) = storage_guard.as_ref() {
                             let payload = serde_json::json!({"text": &decrypted_text});
-                            let _ = storage.save_message(
+                            match storage.save_message(
                                 &msg.id,
                                 "text",
                                 msg.sender_id.as_deref(),
@@ -430,13 +468,17 @@ fn handle_encrypted_message(msg: &ProtocolMessage) {
                                 &payload,
                                 msg.timestamp,
                                 false,
-                            );
+                            ) {
+                                Ok(_) => println!("[✓] Message saved to database"),
+                                Err(e) => println!("[✗] Failed to save message: {}", e),
+                            }
                         }
                     }
                     
                     // Increment new message counter
                     if let Ok(mut count) = NEW_MESSAGE_COUNT.lock() {
                         *count += 1;
+                        println!("[DEBUG] New message count incremented to: {}", *count);
                     }
                 }
                 Err(e) => {
@@ -648,11 +690,21 @@ pub fn send_message(onion_address: String, message: String) -> anyhow::Result<bo
         println!("[DEBUG] Message encrypted with ECIES successfully");
         
         // Create encrypted protocol message with sender_id
-        let msg = MessageProtocol::wrap_encrypted_message(
+        let mut msg = MessageProtocol::wrap_encrypted_message(
             &encrypted_data,
             &my_address,
             &onion_address,
         );
+        
+        // SIGN the message (Proof of Identity) - CRITICAL FOR VERIFICATION
+        MessageProtocol::sign_message(&mut msg, crypto)
+            .map_err(|e| {
+                println!("[DEBUG] ERROR: Message signing failed: {}", e);
+                anyhow::anyhow!("Signing failed: {}", e)
+            })?;
+        
+        println!("[DEBUG] Message signed successfully");
+        
         let msg_id = msg.id.clone();
         let timestamp = msg.timestamp;
         let msg_json = msg.to_json().map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -725,19 +777,23 @@ pub fn send_file(onion_address: String, file_path: String, file_type: String) ->
         let encrypted_data = crypto.encrypt_message(&encoded, &onion_address)
             .map_err(|e| anyhow::anyhow!("ECIES encryption failed: {}", e))?;
             
-        drop(crypto_guard);
-        
-        // Wrap and send
+        // Wrap in protocol message
         let mut payload = std::collections::BTreeMap::new();
         payload.insert("encrypted".to_string(), serde_json::Value::Bool(true));
         payload.insert("data".to_string(), serde_json::to_value(encrypted_data).unwrap());
         
-        let msg = ProtocolMessage::new(
+        let mut msg = ProtocolMessage::new(
             msg_type,
             payload,
             Some(my_address.clone()),
             Some(onion_address.clone()),
         );
+        
+        // SIGN the message (Proof of Identity)
+        MessageProtocol::sign_message(&mut msg, crypto)
+            .map_err(|e| anyhow::anyhow!("File message signing failed: {}", e))?;
+        
+        drop(crypto_guard);
         
         let msg_json = msg.to_json().map_err(|e| anyhow::anyhow!(e.to_string()))?;
         
@@ -784,9 +840,20 @@ pub fn get_contacts() -> anyhow::Result<Vec<ContactInfo>> {
     if let Some(storage) = storage_guard.as_ref() {
         let db_contacts = storage.get_all_contacts().map_err(|e| anyhow::anyhow!(e.to_string()))?;
         for c in db_contacts {
+            // Sanitize nickname when reading from DB to fix existing bad data
+            let raw_nickname = c.nickname.unwrap_or_else(|| "Unknown".to_string());
+            let sanitized_nickname = raw_nickname.chars()
+                .filter(|ch| ch.is_ascii_alphanumeric() || ch.is_whitespace() || *ch == '-' || *ch == '_')
+                .collect::<String>();
+            let final_nickname = if sanitized_nickname.trim().is_empty() {
+                "Contact".to_string()
+            } else {
+                sanitized_nickname
+            };
+            
             contacts.push(ContactInfo {
                 onion_address: c.onion_address,
-                nickname: c.nickname.unwrap_or_else(|| "Unknown".to_string()),
+                nickname: final_nickname,
                 last_seen: c.last_seen,
                 public_key: c.public_key,
             });
@@ -833,7 +900,16 @@ pub fn send_handshake_to_contact(onion_address: String) -> anyhow::Result<bool> 
     }
     
     // Create handshake message - ECIES doesn't need public key exchange
-    let handshake = MessageProtocol::create_handshake_message(&our_onion, false);
+    let mut handshake = MessageProtocol::create_handshake_message(&our_onion, false);
+    
+    // SIGN the handshake message
+    if let Ok(crypto_guard) = CRYPTO.lock() {
+        if let Some(ref crypto) = *crypto_guard {
+            MessageProtocol::sign_message(&mut handshake, crypto)
+                .map_err(|e| anyhow::anyhow!("Failed to sign handshake: {}", e))?;
+        }
+    }
+    
     let json = handshake.to_json().map_err(|e| anyhow::anyhow!(e.to_string()))?;
     
     // Send via Tor
@@ -1020,6 +1096,49 @@ pub fn clear_chat(onion_address: String) -> anyhow::Result<i32> {
         let count = storage.clear_chat(&onion_address)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(count as i32)
+    } else {
+        Err(anyhow::anyhow!("Storage not initialized"))
+    }
+}
+
+/// Fix all existing contacts with bad nicknames (sanitize them)
+pub fn fix_contact_nicknames() -> anyhow::Result<i32> {
+    let storage_guard = STORAGE.lock().unwrap();
+    if let Some(storage) = storage_guard.as_ref() {
+        let contacts = storage.get_all_contacts()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let mut fixed_count = 0;
+        
+        for contact in contacts {
+            if let Some(nickname) = &contact.nickname {
+                // Sanitize the nickname
+                let sanitized = nickname.chars()
+                    .filter(|ch| ch.is_ascii_alphanumeric() || ch.is_whitespace() || *ch == '-' || *ch == '_')
+                    .collect::<String>();
+                
+                // If it changed, update it
+                if sanitized != *nickname || sanitized.trim().is_empty() {
+                    let new_nickname = if sanitized.trim().is_empty() {
+                        "Contact".to_string()
+                    } else {
+                        sanitized
+                    };
+                    
+                    println!("[Fix] Updating contact {} nickname: '{}' -> '{}'", 
+                             contact.onion_address, nickname, new_nickname);
+                    
+                    let _ = storage.add_contact(
+                        &contact.onion_address,
+                        Some(&new_nickname),
+                        contact.public_key.as_deref()
+                    );
+                    fixed_count += 1;
+                }
+            }
+        }
+        
+        println!("[✓] Fixed {} contact nicknames", fixed_count);
+        Ok(fixed_count)
     } else {
         Err(anyhow::anyhow!("Storage not initialized"))
     }

@@ -25,10 +25,33 @@ pub const CONNECTION_TIMEOUT: u64 = 30;
 /// Maximum message size (10MB)
 pub const MESSAGE_MAX_SIZE: usize = 10 * 1024 * 1024;
 
-/// Get the base directory for app data (~/.tor_messenger)
+/// Get the base directory for app data (platform-specific)
+/// - macOS: ~/Library/Application Support/gumnam
+/// - Windows: %APPDATA%/gumnam
+/// - Linux: ~/.local/share/gumnam
 pub fn base_dir() -> PathBuf {
-    let home = dirs::home_dir().expect("Could not find home directory");
-    let base = home.join(".tor_messenger");
+    let base = if cfg!(target_os = "macos") {
+        // macOS: Use Application Support
+        dirs::data_local_dir()
+            .expect("Could not find Application Support directory")
+            .join("gumnam")
+    } else if cfg!(target_os = "windows") {
+        // Windows: Use AppData/Roaming
+        dirs::data_dir()
+            .expect("Could not find AppData directory")
+            .join("gumnam")
+    } else {
+        // Linux/Unix: Use ~/.local/share
+        dirs::data_local_dir()
+            .unwrap_or_else(|| {
+                // Fallback to ~/.gumnam if data_local_dir fails
+                dirs::home_dir()
+                    .expect("Could not find home directory")
+                    .join(".gumnam")
+            })
+            .join("gumnam")
+    };
+    
     fs::create_dir_all(&base).expect("Could not create base directory");
     base
 }
