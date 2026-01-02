@@ -613,13 +613,17 @@ fn handle_client(
         handle_http_request(&mut stream, &data, message_handler, onion_address, templates_dir)?;
     } else {
         // Custom messaging protocol
+        // CRITICAL: Send OK response IMMEDIATELY before processing to avoid blocking sender
+        stream.write_all(b"OK\n")?;
+        stream.flush()?;  // Ensure response is sent immediately
+        
+        // Now process the message in a non-blocking way
         if let Ok(mh) = message_handler.lock() {
             if let Some(ref handler) = *mh {
                 let message_str = String::from_utf8_lossy(&data).trim().to_string();
                 handler(message_str);
             }
         }
-        stream.write_all(b"OK\n")?;
     }
 
     Ok(())

@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUST_DIR="$SCRIPT_DIR/rust"
 FRAMEWORK_DIR="$SCRIPT_DIR/macos/Frameworks/rust_lib.framework"
 FLUTTER_BIN="/Users/mac/flutter/3.29.2/bin/flutter"
-APP_BUNDLE="$SCRIPT_DIR/build/macos/Build/Products/Debug/tor_messenger_ui.app"
+APP_BUNDLE="$SCRIPT_DIR/build/macos/Build/Products/Debug/gumnam.app"
 
 echo "🔨 Building Rust library..."
 cd "$RUST_DIR"

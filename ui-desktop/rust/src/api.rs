@@ -5,11 +5,11 @@ use once_cell::sync::Lazy;
 use base64::prelude::*;
 use std::fs;
 use std::path::Path;
-use tor_messenger::tor_service::TorService;
-use tor_messenger::storage::MessageStorage;
-use tor_messenger::crypto::CryptoHandler;
-use tor_messenger::peer::PeerManager;
-use tor_messenger::message::{Message as ProtocolMessage, MessageType, MessageProtocol};
+use gumnam::tor_service::TorService;
+use gumnam::storage::MessageStorage;
+use gumnam::crypto::CryptoHandler;
+use gumnam::peer::PeerManager;
+use gumnam::message::{Message as ProtocolMessage, MessageType, MessageProtocol};
 
 // Global state
 static TOR_SERVICE: Lazy<Arc<Mutex<Option<TorService>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
@@ -283,9 +283,18 @@ fn handle_handshake_message(msg: &ProtocolMessage) {
             // Check if contact already exists
             let contact_exists = storage.get_contact(sender_id).ok().flatten().is_some();
             if !contact_exists {
-                let default_nickname = &sender_id[..std::cmp::min(16, sender_id.len())];
-                let _ = storage.add_contact(sender_id, Some(default_nickname), None);
-                println!("✓ [Flutter] Added new contact from handshake: {}", sender_id);
+                // Sanitize nickname to only use ASCII characters to avoid UTF-16 issues
+                let safe_prefix = sender_id.chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .take(12)
+                    .collect::<String>();
+                let default_nickname = if safe_prefix.is_empty() {
+                    "Contact".to_string()
+                } else {
+                    safe_prefix
+                };
+                let _ = storage.add_contact(sender_id, Some(&default_nickname), None);
+                println!("✓ [Flutter] Added new contact from handshake: {}", default_nickname);
             }
         }
     }
@@ -302,13 +311,15 @@ fn handle_handshake_message(msg: &ProtocolMessage) {
     } else {
         println!("✓ [Flutter ECIES] Handshake from: {} (sending response)", sender_id);
         
-        // Send a simple response handshake (no public key needed for ECIES)
+        // Send a simple response handshake IMMEDIATELY (no public key needed for ECIES)
+        // This is CRITICAL - we must respond quickly to avoid blocking the sender
         let our_onion = get_onion_address();
         let response_handshake = MessageProtocol::create_handshake_message(&our_onion, true);
         
         if let Ok(json) = response_handshake.to_json() {
             let peer = sender_id.clone();
             let json_clone = json.clone();
+            // Spawn immediately to avoid blocking
             std::thread::spawn(move || {
                 let service_guard = TOR_SERVICE.lock().unwrap();
                 if let Some(ref service) = *service_guard {
@@ -316,6 +327,8 @@ fn handle_handshake_message(msg: &ProtocolMessage) {
                         Ok(_) => println!("✓ [Flutter] Response handshake sent to {}", peer),
                         Err(e) => println!("✗ [Flutter] Response handshake failed: {}", e),
                     }
+                } else {
+                    println!("✗ [Flutter] Tor service not available for handshake response");
                 }
             });
         }
@@ -329,7 +342,7 @@ fn handle_encrypted_message(msg: &ProtocolMessage) {
     // Extract encrypted data from payload
     let encrypted_data = match msg.payload.get("data") {
         Some(data) => {
-            match serde_json::from_value::<tor_messenger::crypto::EncryptedData>(data.clone()) {
+            match serde_json::from_value::<gumnam::crypto::EncryptedData>(data.clone()) {
                 Ok(ed) => ed,
                 Err(e) => {
                     println!("⚠ [Flutter] Invalid encrypted data format from {}: {}", sender, e);
@@ -356,9 +369,18 @@ fn handle_encrypted_message(msg: &ProtocolMessage) {
             println!("📱 [Flutter] New contact detected: {}", sender);
             if let Ok(storage_guard) = STORAGE.lock() {
                 if let Some(storage) = storage_guard.as_ref() {
-                    let default_nickname = &sender[..std::cmp::min(16, sender.len())];
-                    let _ = storage.add_contact(&sender, Some(default_nickname), None);
-                    println!("✓ [Flutter] Created new contact for {}", sender);
+                    // Sanitize nickname to only use ASCII characters to avoid UTF-16 issues
+                    let safe_prefix = sender.chars()
+                        .filter(|c| c.is_ascii_alphanumeric())
+                        .take(12)
+                        .collect::<String>();
+                    let default_nickname = if safe_prefix.is_empty() {
+                        "Contact".to_string()
+                    } else {
+                        safe_prefix
+                    };
+                    let _ = storage.add_contact(&sender, Some(&default_nickname), None);
+                    println!("✓ [Flutter] Created new contact: {}", default_nickname);
                 }
             }
             true
@@ -374,12 +396,18 @@ fn handle_encrypted_message(msg: &ProtocolMessage) {
         }
     }
     
-    // If it's a new contact, send a handshake back so they know we are online
+    // If it's a new contact, send a handshake back IMMEDIATELY (non-blocking)
+    // This must happen BEFORE decryption to avoid blocking the sender
     if is_new_contact {
-        println!("👋 [Flutter] Sending handshake to new contact {}", sender);
+        println!("👋 [Flutter] Sending handshake response to new contact {}", sender);
         let sender_clone = sender.clone();
         std::thread::spawn(move || {
-            let _ = send_handshake_to_contact(sender_clone);
+            // Send handshake immediately to unblock the sender
+            if let Err(e) = send_handshake_to_contact(sender_clone.clone()) {
+                println!("⚠ [Flutter] Failed to send handshake to {}: {}", sender_clone, e);
+            } else {
+                println!("✓ [Flutter] Handshake sent successfully to {}", sender_clone);
+            }
         });
     }
     
@@ -435,7 +463,7 @@ fn handle_text_message(msg: &ProtocolMessage) {
     };
     
     // STRICT: Must be valid EncryptedData structure
-    let encrypted_data = match serde_json::from_value::<tor_messenger::crypto::EncryptedData>(data.clone()) {
+    let encrypted_data = match serde_json::from_value::<gumnam::crypto::EncryptedData>(data.clone()) {
         Ok(ed) => ed,
         Err(_) => {
             println!("⚠ [Flutter] Rejected invalid encrypted data format from {}", sender);
@@ -456,9 +484,18 @@ fn handle_text_message(msg: &ProtocolMessage) {
             println!("📱 [Flutter] New contact detected: {}", sender);
             if let Ok(storage_guard) = STORAGE.lock() {
                 if let Some(storage) = storage_guard.as_ref() {
-                    let default_nickname = &sender[..std::cmp::min(16, sender.len())];
-                    let _ = storage.add_contact(&sender, Some(default_nickname), None);
-                    println!("✓ [Flutter] Created new contact for {}", sender);
+                    // Sanitize nickname to only use ASCII characters to avoid UTF-16 issues
+                    let safe_prefix = sender.chars()
+                        .filter(|c| c.is_ascii_alphanumeric())
+                        .take(12)
+                        .collect::<String>();
+                    let default_nickname = if safe_prefix.is_empty() {
+                        "Contact".to_string()
+                    } else {
+                        safe_prefix
+                    };
+                    let _ = storage.add_contact(&sender, Some(&default_nickname), None);
+                    println!("✓ [Flutter] Created new contact: {}", default_nickname);
                 }
             }
         }
@@ -515,7 +552,7 @@ fn handle_file_message(msg: &ProtocolMessage) {
     };
     
     // Strict: Must be valid EncryptedData
-    let encrypted_data = match serde_json::from_value::<tor_messenger::crypto::EncryptedData>(data.clone()) {
+    let encrypted_data = match serde_json::from_value::<gumnam::crypto::EncryptedData>(data.clone()) {
         Ok(ed) => ed,
         Err(_) => {
             println!("⚠ [Flutter] Rejected invalid encrypted media data from {}", sender);
@@ -762,7 +799,7 @@ pub fn add_contact(onion_address: String, nickname: String) -> anyhow::Result<bo
     let storage_guard = STORAGE.lock().unwrap();
     if let Some(storage) = storage_guard.as_ref() {
         // STRICT VALIDATION: Ensure it's a valid v3 onion address and we can derive a pubkey
-        if let Err(e) = tor_messenger::crypto::CryptoHandler::onion_to_pubkey(&onion_address) {
+        if let Err(e) = gumnam::crypto::CryptoHandler::onion_to_pubkey(&onion_address) {
             println!("⚠ [Flutter] Rejected invalid onion address: {} ({})", onion_address, e);
             return Err(anyhow::anyhow!("Invalid onion address: {}", e));
         }
